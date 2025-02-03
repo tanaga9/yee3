@@ -5,6 +5,7 @@ import json
 import random
 import shutil
 import subprocess
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -19,6 +20,7 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QShortcut,
     QStatusBar,
+    QToolButton,
 )
 from PyQt5.QtGui import QPixmap, QPalette, QImageReader, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint
@@ -101,7 +103,7 @@ class ImageViewer(QMainWindow):
         # Set up a scroll area with a black background.
         self.scrollArea = QScrollArea()
         self.scrollArea.setAlignment(Qt.AlignCenter)
-        self.scrollArea.setStyleSheet("background-color: black;")
+        self.scrollArea.setStyleSheet("background-color: #222;")
         self.scrollArea.setWidget(self.imageLabel)
         # Prevent the scroll area from taking focus so that key events are handled by the main window.
         self.scrollArea.setFocusPolicy(Qt.NoFocus)
@@ -164,6 +166,8 @@ class ImageViewer(QMainWindow):
         # Variables for dragging
         self.dragging = False
         self.drag_start_position = QPoint()
+
+        self.last_display_datetime = datetime.now()
 
     def createMenus(self):
         """
@@ -252,6 +256,16 @@ class ImageViewer(QMainWindow):
         self.normalSizeAct = QAction("Normal Size", self)
         self.normalSizeAct.triggered.connect(self.normalSize)
 
+        self.limitHorizontalScroll = QToolButton()
+        self.limitHorizontalScroll.setText("Limit Horizontal Scroll")
+        self.limitHorizontalScroll.setCheckable(True)
+        self.limitHorizontalScroll.setChecked(True)
+
+        self.freeScroll = QToolButton()
+        self.freeScroll.setText("Free Scroll")
+        self.freeScroll.setCheckable(True)
+        self.freeScroll.setChecked(False)
+
     def createToolbar(self):
         """
         Create a toolbar and add the actions for opening a folder and zooming.
@@ -262,6 +276,8 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.zoomInAct)
         toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
+        toolbar.addWidget(self.limitHorizontalScroll)
+        toolbar.addWidget(self.freeScroll)
 
     def openFolder(self):
         """
@@ -416,16 +432,26 @@ class ImageViewer(QMainWindow):
         """
         deltaY = event.angleDelta().y()
         deltaX = event.angleDelta().x()
-        if abs(deltaY) >= abs(deltaX):
-            if deltaY > 0:
-                self.verticalPreviousImage()
-            elif deltaY < 0:
-                self.verticalNextImage()
-        else:
-            if deltaX > 0:
-                self.horizontalPreviousImage()
-            elif deltaX < 0:
-                self.horizontalNextImage()
+        now = datetime.now()
+        elapsed_time_since_last_display = (
+            now - self.last_display_datetime
+        ).total_seconds()
+        if self.freeScroll.isChecked() or elapsed_time_since_last_display > 0.25:
+            if abs(deltaY) >= abs(deltaX):
+                if deltaY > 0:
+                    self.verticalPreviousImage()
+                    self.last_display_datetime = now
+                elif deltaY < 0:
+                    self.verticalNextImage()
+                    self.last_display_datetime = now
+            else:
+                if not self.limitHorizontalScroll.isChecked():
+                    if deltaX > 0:
+                        self.horizontalPreviousImage()
+                        self.last_display_datetime = now
+                    elif deltaX < 0:
+                        self.horizontalNextImage()
+                        self.last_display_datetime = now
         event.accept()
 
     def zoomIn(self):
