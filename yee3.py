@@ -284,7 +284,7 @@ class ImageViewer(QMainWindow):
         imageFiles = [
             os.path.join(folder, f)
             for f in files
-            if any(f.lower().endswith(ext) for ext in imageExtensions)
+            if any(f.lower().endswith("." + ext) for ext in imageExtensions)
         ]
         if imageFiles:
             self.allImages = imageFiles

@@ -1,4 +1,5 @@
-Yee3
+
+Yee 3
 ======
 
 The Minimalist Image Viewer.
@@ -6,6 +7,7 @@ The Minimalist Image Viewer.
 [Xee 3](https://theunarchiver.com/xee) does not support Apple Silicon and could not open some image formats correctly, so I tried creating an Image Viewer using ChatGPT (o3-mini-high).
 
 It is intended for macOS. If you want to make it into an application, wrapping it with Automator would be a good option.
+
 
 Used via Automator
 --------
