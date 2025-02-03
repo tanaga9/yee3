@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QStatusBar,
 )
 from PyQt5.QtGui import QPixmap, QPalette, QImageReader, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QEvent
+from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint
 
 
 def copy_with_unique_name(src, dst_dir):
@@ -160,6 +160,10 @@ class ImageViewer(QMainWindow):
             sc = QShortcut(QKeySequence(f"Meta+{i}"), self)
             sc.activated.connect(lambda i=i: self.copyToDestination(i))
             self.copyShortcuts[i] = sc
+
+        # Variables for dragging
+        self.dragging = False
+        self.drag_start_position = QPoint()
 
     def createMenus(self):
         """
@@ -638,6 +642,29 @@ class ImageViewer(QMainWindow):
         if self.firstShow:
             QTimer.singleShot(0, self.adjustImageScale)
             self.firstShow = False
+
+    def mousePressEvent(self, event):
+        """Triggered when the mouse button is pressed."""
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            # Calculate the offset between the mouse click and the window's top-left corner
+            self.drag_start_position = (
+                event.globalPos() - self.frameGeometry().topLeft()
+            )
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        """Triggered when the mouse is dragged."""
+        if self.dragging:
+            # Move the window according to the mouse movement
+            self.move(event.globalPos() - self.drag_start_position)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        """Triggered when the mouse button is released."""
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
+            event.accept()
 
 
 if __name__ == "__main__":
