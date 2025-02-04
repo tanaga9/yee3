@@ -5,6 +5,7 @@ import json
 import random
 import shutil
 import subprocess
+import unicodedata
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication,
@@ -501,9 +502,10 @@ class ImageViewer(QMainWindow):
         """
         supportedFormats = QImageReader.supportedImageFormats()
         imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
+        folder = unicodedata.normalize("NFD", folder)
         files = os.listdir(folder)
         imageFiles = [
-            os.path.join(folder, f)
+            os.path.join(folder, unicodedata.normalize("NFD", f))
             for f in files
             if any(f.lower().endswith("." + ext) for ext in imageExtensions)
         ]
@@ -536,7 +538,7 @@ class ImageViewer(QMainWindow):
 
         :param filePath: The full path to the image file.
         """
-        self.currentFile = filePath
+        self.currentFile = unicodedata.normalize("NFD", filePath)
         image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
@@ -974,7 +976,7 @@ if __name__ == "__main__":
 
     # If an image file is provided as a command-line argument, load its folder and display that image.
     if len(sys.argv) > 1:
-        imagePath = sys.argv[1]
+        imagePath = unicodedata.normalize("NFD", sys.argv[1])
         if os.path.isfile(imagePath):
             folder = os.path.dirname(imagePath)
             viewer.loadImagesFromFolder(folder)
