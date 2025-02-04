@@ -21,9 +21,56 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QStatusBar,
     QToolButton,
+    QWidget,
 )
-from PyQt5.QtGui import QPixmap, QPalette, QImageReader, QKeySequence
+from PyQt5.QtGui import (
+    QPixmap,
+    QPalette,
+    QImageReader,
+    QKeySequence,
+    QPainter,
+    QColor,
+    QBrush,
+)
 from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint
+
+# 0 <= decay < 1
+scroll_factors_dict = {
+    "limit": {
+        "vertical": {
+            "scroll": 2.5,
+            "decay": 0.7,
+            "release": 100.0,
+            "threshold": 100,
+            "max": 120,
+        },
+        "horizontal": {
+            "scroll": 0.8,
+            "decay": 0.5,
+            "release": 2.0,
+            "threshold": 80,
+            "max": 100,
+        },
+        "interval": 0.2,
+    },
+    "free": {
+        "vertical": {
+            "scroll": 2.5,
+            "decay": 0.7,
+            "release": 1.1,
+            "threshold": 100,
+            "max": 1000,
+        },
+        "horizontal": {
+            "scroll": 0.5,
+            "decay": 0.9,
+            "release": 1.1,
+            "threshold": 100,
+            "max": 1000,
+        },
+        "interval": -1,
+    },
+}
 
 
 def copy_with_unique_name(src, dst_dir):
@@ -51,6 +98,92 @@ def copy_with_unique_name(src, dst_dir):
 
     shutil.copy2(src, dst_path)
     return dst_path
+
+
+class VerticalGauge(QWidget):
+    """
+    Gauge for vertical scrolling (displayed on the left edge of the screen).
+    Positive direction (upward scroll) is blue, negative direction (downward scroll) is red.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.value = 0
+        self.max_value = 300
+        self.opacity = 0.5
+        self.bar_width = 10  # Fixed width of the vertical gauge
+        self.fixed_height = 200  # Fixed max height of the vertical gauge
+        self.hide()
+
+    def updateGauge(self, value):
+        """Update the length of the gauge and refresh the display"""
+        self.value = max(-self.max_value, min(value, self.max_value))
+        if abs(self.value) > 0:
+            self.show()
+        else:
+            self.hide()
+        self.repaint()
+
+    def paintEvent(self, event):
+        """Render the gauge"""
+        if self.value == 0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        gauge_length = (self.fixed_height / self.max_value) * abs(self.value)
+        color = (
+            QColor(100, 200, 255, int(self.opacity * 255))
+            if self.value > 0
+            else QColor(255, 100, 100, int(self.opacity * 255))
+        )
+        y_pos = 0 if self.value > 0 else self.fixed_height - gauge_length
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRect(0, int(y_pos), int(self.bar_width), int(gauge_length))
+
+
+class HorizontalGauge(QWidget):
+    """
+    Gauge for horizontal scrolling (displayed at the top of the screen).
+    Positive direction (right scroll) is blue, negative direction (left scroll) is red.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.value = 0
+        self.max_value = 300
+        self.opacity = 0.5
+        self.bar_height = 10  # Fixed height of the horizontal gauge
+        self.fixed_width = 200  # Fixed max width of the horizontal gauge
+        self.hide()
+
+    def updateGauge(self, value):
+        """Update the length of the gauge and refresh the display"""
+        self.value = max(-self.max_value, min(value, self.max_value))
+        if abs(self.value) > 0:
+            self.show()
+        else:
+            self.hide()
+        self.repaint()
+
+    def paintEvent(self, event):
+        """Render the gauge"""
+        if self.value == 0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        gauge_length = (self.fixed_width / self.max_value) * abs(self.value)
+        color = (
+            QColor(100, 200, 255, int(self.opacity * 255))
+            if self.value > 0
+            else QColor(255, 100, 100, int(self.opacity * 255))
+        )
+        x_pos = 0 if self.value > 0 else self.fixed_width - gauge_length
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRect(int(x_pos), 0, int(gauge_length), int(self.bar_height))
 
 
 class ImageViewer(QMainWindow):
@@ -169,6 +302,23 @@ class ImageViewer(QMainWindow):
 
         self.last_display_datetime = datetime.now()
 
+        # Accumulated scroll values
+        self.scrollAccumulationX = 0
+        self.scrollAccumulationY = 0
+
+        # Vertical gauge (left edge)
+        self.verticalGauge = VerticalGauge(self)
+        self.verticalGauge.setGeometry(0, 0, 10, 200)
+
+        # Horizontal gauge (top edge)
+        self.horizontalGauge = HorizontalGauge(self)
+        self.horizontalGauge.setGeometry(0, 0, 200, 10)
+
+        # Create a timer for decay (reduces values every 50ms)
+        self.decayTimer = QTimer(self)
+        self.decayTimer.timeout.connect(self.decayScrollValues)
+        self.decayTimer.start(50)  # Called every 50ms
+
     def createMenus(self):
         """
         Create the menu bar and add the "File" menu with actions:
@@ -256,11 +406,6 @@ class ImageViewer(QMainWindow):
         self.normalSizeAct = QAction("Normal Size", self)
         self.normalSizeAct.triggered.connect(self.normalSize)
 
-        self.limitHorizontalScroll = QToolButton()
-        self.limitHorizontalScroll.setText("Limit Horizontal Scroll")
-        self.limitHorizontalScroll.setCheckable(True)
-        self.limitHorizontalScroll.setChecked(True)
-
         self.freeScroll = QToolButton()
         self.freeScroll.setText("Free Scroll")
         self.freeScroll.setCheckable(True)
@@ -276,7 +421,6 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.zoomInAct)
         toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
-        toolbar.addWidget(self.limitHorizontalScroll)
         toolbar.addWidget(self.freeScroll)
 
     def openFolder(self):
@@ -432,27 +576,103 @@ class ImageViewer(QMainWindow):
         """
         deltaY = event.angleDelta().y()
         deltaX = event.angleDelta().x()
+
         now = datetime.now()
         elapsed_time_since_last_display = (
             now - self.last_display_datetime
         ).total_seconds()
-        if self.freeScroll.isChecked() or elapsed_time_since_last_display > 0.25:
-            if abs(deltaY) >= abs(deltaX):
-                if deltaY > 0:
-                    self.verticalPreviousImage()
-                    self.last_display_datetime = now
-                elif deltaY < 0:
-                    self.verticalNextImage()
+
+        if self.freeScroll.isChecked():
+            scroll_factors = scroll_factors_dict["free"]
+        else:
+            scroll_factors = scroll_factors_dict["limit"]
+
+        # Vertical scroll accumulation
+        self.scrollAccumulationY += deltaY * scroll_factors["vertical"]["scroll"]
+        self.scrollAccumulationY = min(
+            self.scrollAccumulationY, scroll_factors["vertical"]["max"]
+        )
+
+        # Horizontal scroll accumulation
+        self.scrollAccumulationX += deltaX * scroll_factors["horizontal"]["scroll"]
+        self.scrollAccumulationX = min(
+            self.scrollAccumulationX, scroll_factors["horizontal"]["max"]
+        )
+
+        self.statusBar().showMessage(
+            f"wheelEvent: {deltaX}, {deltaY} - X: {self.scrollAccumulationX}, Y: {self.scrollAccumulationY}",
+            1000,
+        )
+
+        if elapsed_time_since_last_display > scroll_factors["interval"]:
+            if abs(self.scrollAccumulationY) >= abs(self.scrollAccumulationX):
+                # Vertical scrolling
+                self.verticalGauge.updateGauge(self.scrollAccumulationY)
+
+                if (
+                    abs(self.scrollAccumulationY)
+                    >= scroll_factors["vertical"]["threshold"]
+                ):
+                    if self.scrollAccumulationY > 0:
+                        self.verticalPreviousImage()
+                    else:
+                        self.verticalNextImage()
+
+                    self.scrollAccumulationY /= scroll_factors["vertical"]["release"]
                     self.last_display_datetime = now
             else:
-                if not self.limitHorizontalScroll.isChecked():
-                    if deltaX > 0:
+                # Horizontal scrolling
+                self.horizontalGauge.updateGauge(self.scrollAccumulationX)
+
+                if (
+                    abs(self.scrollAccumulationX)
+                    >= scroll_factors["horizontal"]["threshold"]
+                ):
+                    if self.scrollAccumulationX > 0:
                         self.horizontalPreviousImage()
-                        self.last_display_datetime = now
-                    elif deltaX < 0:
+                    else:
                         self.horizontalNextImage()
-                        self.last_display_datetime = now
+
+                    self.scrollAccumulationX /= scroll_factors["horizontal"]["release"]
+                    self.last_display_datetime = now
+
+        # Update the gauge
+        self.verticalGauge.updateGauge(self.scrollAccumulationY)
+        self.horizontalGauge.updateGauge(self.scrollAccumulationX)
+
+        # Start the timer (execute the decay process)
+        if not self.decayTimer.isActive():
+            self.decayTimer.start()
+
         event.accept()
+
+    def decayScrollValues(self):
+        """Reduce and update the gauge display"""
+
+        if self.freeScroll.isChecked():
+            scroll_factors = scroll_factors_dict["free"]
+        else:
+            scroll_factors = scroll_factors_dict["limit"]
+
+        threshold = 1  # Threshold (set to zero when below this value)
+
+        # Vertical scroll decay
+        self.scrollAccumulationY *= scroll_factors["vertical"]["decay"]
+        if abs(self.scrollAccumulationY) < threshold:
+            self.scrollAccumulationY = 0
+
+        # Horizontal scroll decay
+        self.scrollAccumulationX *= scroll_factors["horizontal"]["decay"]
+        if abs(self.scrollAccumulationX) < threshold:
+            self.scrollAccumulationX = 0
+
+        # Update the gauge
+        self.verticalGauge.updateGauge(self.scrollAccumulationY)
+        self.horizontalGauge.updateGauge(self.scrollAccumulationX)
+
+        # Stop the timer if both values reach zero
+        if self.scrollAccumulationX == 0 and self.scrollAccumulationY == 0:
+            self.decayTimer.stop()
 
     def zoomIn(self):
         """
