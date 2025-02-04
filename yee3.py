@@ -265,14 +265,15 @@ class ImageViewer(QMainWindow):
 
         # Lists for image file paths.
         self.allImages = []  # Unsorted list of image file paths.
-        # Vertical order: images sorted by last modified time (newest first).
-        self.verticalOrder = []
-        # Horizontal order: images in random order (can be changed later to filename order).
-        self.horizontalOrder = []
+        # mtime order: images sorted by last modified time (newest first).
+        self.mtimeOrder = []
+        # random order: images in random order (can be changed later to filename order).
+        self.randomOrder = []
+        # fname order: file name order
+        self.fnameOrder = []
 
-        # Indices into the above lists.
-        self.verticalIndex = -1
-        self.horizontalIndex = -1
+        self.verticalOrder = self.mtimeOrder
+        self.horizontalOrder = self.randomOrder
 
         # Store the currently loaded image (original, unscaled) and the current file path.
         self.originalPixmap = None
@@ -363,12 +364,6 @@ class ImageViewer(QMainWindow):
         if filePath:
             folder = os.path.dirname(filePath)
             self.loadImagesFromFolder(folder)
-            try:
-                self.verticalIndex = self.verticalOrder.index(filePath)
-                self.horizontalIndex = self.horizontalOrder.index(filePath)
-            except ValueError:
-                self.verticalIndex = 0
-                self.horizontalIndex = 0
             self.loadImageFromFile(filePath)
 
     def revealInFinder(self):
@@ -386,6 +381,62 @@ class ImageViewer(QMainWindow):
         Show the copy destination dock widget.
         """
         self.copyDock.show()
+
+    def get_order_name(self, order):
+        """Return the order type as a string based on the list object"""
+        if order is self.mtimeOrder:
+            return "mtime"
+        elif order is self.fnameOrder:
+            return "fname"
+        elif order is self.randomOrder:
+            return "random"
+        return "mtime"  # Default in case of an unexpected value
+
+    def get_order_by_name(self, name, default=None):
+        """Return the corresponding order list based on the given string"""
+        if name == "mtime":
+            return self.mtimeOrder
+        elif name == "fname":
+            return self.fnameOrder
+        elif name == "random":
+            return self.randomOrder
+        return default if default is not None else self.mtimeOrder
+
+    def toggled_order(self, current, other):
+        """
+        The `current` and `other` parameters should be one of "mtime", "random", or "fname".
+        Determines and returns the next order to switch to based on the given two values.
+        """
+        if current == "mtime":
+            # If horizontal is "random", return "fname"; otherwise, return "random"
+            return "fname" if other == "random" else "random"
+        elif current == "random":
+            # If horizontal is "fname", return "mtime"; otherwise, return "fname"
+            return "mtime" if other == "fname" else "fname"
+        elif current == "fname":
+            # If horizontal is "mtime", return "random"; otherwise, return "mtime"
+            return "random" if other == "mtime" else "mtime"
+        return "mtime"
+
+    def onVScrollClicked(self):
+        if self.verticalOrder:
+            # Get the current vertical and horizontal order as strings
+            current = self.get_order_name(self.verticalOrder)
+            other = self.get_order_name(self.horizontalOrder)
+            # Determine the next order to set
+            new_order_name = self.toggled_order(current, other)
+            self.verticalOrder = self.get_order_by_name(new_order_name)
+            self.VScroll.setText("VScroll: " + new_order_name)
+
+    def onHScrollClicked(self):
+        if self.horizontalOrder:
+            # Get the current horizontal and vertical order as strings
+            current = self.get_order_name(self.horizontalOrder)
+            other = self.get_order_name(self.verticalOrder)
+            # Determine the next order to set
+            new_order_name = self.toggled_order(current, other)
+            self.horizontalOrder = self.get_order_by_name(new_order_name)
+            self.HScroll.setText("HScroll: " + new_order_name)
 
     def createActions(self):
         """
@@ -406,6 +457,14 @@ class ImageViewer(QMainWindow):
         self.normalSizeAct = QAction("Normal Size", self)
         self.normalSizeAct.triggered.connect(self.normalSize)
 
+        self.VScroll = QToolButton()
+        self.VScroll.setText("VScroll: mtime")
+        self.VScroll.clicked.connect(self.onVScrollClicked)
+
+        self.HScroll = QToolButton()
+        self.HScroll.setText("HScroll: random")
+        self.HScroll.clicked.connect(self.onHScrollClicked)
+
         self.freeScroll = QToolButton()
         self.freeScroll.setText("Free Scroll")
         self.freeScroll.setCheckable(True)
@@ -421,6 +480,8 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.zoomInAct)
         toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
+        toolbar.addWidget(self.VScroll)
+        toolbar.addWidget(self.HScroll)
         toolbar.addWidget(self.freeScroll)
 
     def openFolder(self):
@@ -447,21 +508,26 @@ class ImageViewer(QMainWindow):
             if any(f.lower().endswith("." + ext) for ext in imageExtensions)
         ]
         if imageFiles:
+            # Store the current vertical and horizontal order types
+            vscroll = self.get_order_name(self.verticalOrder)
+            hscroll = self.get_order_name(self.horizontalOrder)
+
             self.allImages = imageFiles
-            # Vertical order: sort by last modified time (newest first).
-            self.verticalOrder = sorted(
+            # fname order: Sort by file name.
+            self.fnameOrder = sorted(self.allImages)
+            # mtime order: Sort by last modified time (newest first).
+            self.mtimeOrder = sorted(
                 self.allImages, key=lambda p: os.path.getmtime(p), reverse=True
             )
-            # Horizontal order: random order.
-            self.horizontalOrder = list(self.allImages)
-            random.shuffle(self.horizontalOrder)
-            # Initialize indices using the first image in vertical order.
-            currentFile = self.verticalOrder[0]
-            self.verticalIndex = 0
-            try:
-                self.horizontalIndex = self.horizontalOrder.index(currentFile)
-            except ValueError:
-                self.horizontalIndex = 0
+            # random order: Shuffle images randomly.
+            self.randomOrder = list(self.allImages)
+            random.shuffle(self.randomOrder)
+            # Initialize indices using the first image in mtime order.
+            currentFile = self.mtimeOrder[0]
+
+            self.verticalOrder = self.get_order_by_name(vscroll, self.mtimeOrder)
+            self.horizontalOrder = self.get_order_by_name(hscroll, self.randomOrder)
+
             self.loadImageFromFile(currentFile)
 
     def loadImageFromFile(self, filePath):
@@ -504,9 +570,9 @@ class ImageViewer(QMainWindow):
         Show the next image in vertical order (sorted by last modified time).
         """
         if self.verticalOrder:
-            self.verticalIndex = (self.verticalIndex + 1) % len(self.verticalOrder)
-            currentFile = self.verticalOrder[self.verticalIndex]
-            self.horizontalIndex = self.horizontalOrder.index(currentFile)
+            index = self.verticalOrder.index(self.currentFile)
+            index = (index + 1) % len(self.verticalOrder)
+            currentFile = self.verticalOrder[index]
             self.loadImageFromFile(currentFile)
 
     def verticalPreviousImage(self):
@@ -514,9 +580,9 @@ class ImageViewer(QMainWindow):
         Show the previous image in vertical order (sorted by last modified time).
         """
         if self.verticalOrder:
-            self.verticalIndex = (self.verticalIndex - 1) % len(self.verticalOrder)
-            currentFile = self.verticalOrder[self.verticalIndex]
-            self.horizontalIndex = self.horizontalOrder.index(currentFile)
+            index = self.verticalOrder.index(self.currentFile)
+            index = (index - 1) % len(self.verticalOrder)
+            currentFile = self.verticalOrder[index]
             self.loadImageFromFile(currentFile)
 
     # --- Horizontal Navigation (random order) ---
@@ -525,11 +591,9 @@ class ImageViewer(QMainWindow):
         Show the next image in horizontal order (random order).
         """
         if self.horizontalOrder:
-            self.horizontalIndex = (self.horizontalIndex + 1) % len(
-                self.horizontalOrder
-            )
-            currentFile = self.horizontalOrder[self.horizontalIndex]
-            self.verticalIndex = self.verticalOrder.index(currentFile)
+            index = self.horizontalOrder.index(self.currentFile)
+            index = (index + 1) % len(self.horizontalOrder)
+            currentFile = self.horizontalOrder[index]
             self.loadImageFromFile(currentFile)
 
     def horizontalPreviousImage(self):
@@ -537,11 +601,9 @@ class ImageViewer(QMainWindow):
         Show the previous image in horizontal order (random order).
         """
         if self.horizontalOrder:
-            self.horizontalIndex = (self.horizontalIndex - 1) % len(
-                self.horizontalOrder
-            )
-            currentFile = self.horizontalOrder[self.horizontalIndex]
-            self.verticalIndex = self.verticalOrder.index(currentFile)
+            index = self.horizontalOrder.index(self.currentFile)
+            index = (index - 1) % len(self.horizontalOrder)
+            currentFile = self.horizontalOrder[index]
             self.loadImageFromFile(currentFile)
 
     def keyPressEvent(self, event):
@@ -715,10 +777,9 @@ class ImageViewer(QMainWindow):
         revealAction = menu.addAction("Reveal in Finder")
         action = menu.exec_(event.globalPos())
         if action == revealAction:
-            if self.verticalOrder and self.verticalIndex >= 0:
-                currentFile = self.verticalOrder[self.verticalIndex]
+            if self.currentFile is not None:
                 try:
-                    subprocess.call(["open", "-R", currentFile])
+                    subprocess.call(["open", "-R", self.currentFile])
                 except Exception as e:
                     print("Error revealing file in Finder:", e)
 
@@ -745,12 +806,6 @@ class ImageViewer(QMainWindow):
                 if any(filePath.lower().endswith(ext) for ext in imageExtensions):
                     folder = os.path.dirname(filePath)
                     self.loadImagesFromFolder(folder)
-                    try:
-                        self.verticalIndex = self.verticalOrder.index(filePath)
-                        self.horizontalIndex = self.horizontalOrder.index(filePath)
-                    except ValueError:
-                        self.verticalIndex = 0
-                        self.horizontalIndex = 0
                     self.loadImageFromFile(filePath)
                     break
 
@@ -924,12 +979,12 @@ if __name__ == "__main__":
             folder = os.path.dirname(imagePath)
             viewer.loadImagesFromFolder(folder)
             try:
-                viewer.verticalIndex = viewer.verticalOrder.index(imagePath)
-                viewer.horizontalIndex = viewer.horizontalOrder.index(imagePath)
+                viewer.mtimeOrder.index(imagePath)
             except ValueError:
-                viewer.verticalIndex = 0
-                viewer.horizontalIndex = 0
-            viewer.loadImageFromFile(imagePath)
+                viewer.loadImageFromFile(viewer.mtimeOrder[0])
+                viewer.statusBar().showMessage(f"NotFound file {imagePath}", 10000)
+            else:
+                viewer.loadImageFromFile(imagePath)
 
     viewer.show()
     sys.exit(app.exec_())
