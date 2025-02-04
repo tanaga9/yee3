@@ -443,9 +443,9 @@ class ImageViewer(QMainWindow):
         """
         Create actions for opening a folder, zooming in, zooming out, and resetting the image size.
         """
-        self.openFolderAct = QAction("Open Folder", self)
-        self.openFolderAct.setShortcut(QKeySequence.Open)
-        self.openFolderAct.triggered.connect(self.openFolder)
+        self.copyToAct = QAction("Copy to ...", self)
+        # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
+        self.copyToAct.triggered.connect(self.showCopyDock)
 
         self.zoomInAct = QAction("Zoom In", self)
         self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
@@ -477,7 +477,7 @@ class ImageViewer(QMainWindow):
         """
         toolbar = QToolBar("Toolbar")
         self.addToolBar(toolbar)
-        toolbar.addAction(self.openFolderAct)
+        toolbar.addAction(self.copyToAct)
         toolbar.addAction(self.zoomInAct)
         toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
