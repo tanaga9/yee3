@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import random
+import bisect
 import shutil
 import subprocess
 import unicodedata
@@ -102,9 +103,41 @@ def copy_with_unique_name(src, dst_dir):
     return dst_path
 
 
+class SortedList:
+    """A simple sorted list implementation using bisect."""
+
+    def __init__(self):
+        self._list = []
+
+    def add(self, item):
+        """Insert an item while keeping the list sorted."""
+        bisect.insort_left(self._list, item)
+
+    def bisect_left(self, item):
+        """Return the insertion index for item."""
+        return bisect.bisect_left(self._list, item)
+
+    def clear(self):
+        """Clear all elements in the list."""
+        self._list.clear()
+
+    def __getitem__(self, index):
+        return self._list[index]
+
+    def __len__(self):
+        return len(self._list)
+
+    def __repr__(self):
+        return repr(self._list)
+
+
 class ImageFile:
     entry: os.DirEntry
     path_nfd: str
+
+    def __init__(self, entry: os.DirEntry):
+        self.entry = entry
+        self.path_nfd = unicodedata.normalize("NFD", entry.path)
 
 
 class FastOrderedSet:
@@ -112,21 +145,30 @@ class FastOrderedSet:
     An ordered set that mimics list behavior while ensuring unique elements.
     """
 
-    def __init__(self, iterable=None):
+    def __init__(self, iterable=None, key_func=None):
         """Initialize an ordered set. O(N) if iterable is provided, otherwise O(1)."""
-        self.items: List[ImageFile] = []  # List for integer-based access
-        self.index_map: Dict[str, int] = {}  # Dictionary for string-based access
+        self.items: List[ImageFile] = []  # List for index-based access
+        self.keys = SortedList()  # Binary search optimized
+        self.index_map: Dict[str, ImageFile] = {}  # Map paths to objects
+        self.key_func = key_func
         if iterable:
             self.update(iterable)
 
-    def add(self, entry: os.DirEntry):
-        """Add an item (avoid duplicates)"""
-        item = ImageFile()
-        item.entry = entry
-        item.path_nfd = unicodedata.normalize("NFD", entry.path)
-        if item.path_nfd not in self.index_map:
-            self.index_map[item.path_nfd] = len(self.items)
-            self.items.append(item)
+    def add(self, item: ImageFile):
+        """Add an item while ensuring uniqueness (O(log N))"""
+        if item.path_nfd in self.index_map:
+            return  # Duplicate, skip insertion
+
+        if self.key_func is None:
+            # Append if no custom sorting is required
+            index = len(self.items)
+        else:
+            key = self.key_func(item)
+            index = self.keys.bisect_left(key)  # Get insertion index (O(log N))
+            self.keys.add(key)  # Maintain sorted order (O(log N))
+
+        self.items.insert(index, item)  # Insert at the correct position (O(N))
+        self.index_map[item.path_nfd] = item  # Store reference for quick lookup
 
     def update(self, sequence):
         """
@@ -141,6 +183,7 @@ class FastOrderedSet:
     def clear(self):
         """Remove all elements from the set. O(1)."""
         self.items.clear()
+        self.keys.clear()
         self.index_map.clear()
 
     def index(self, value: str) -> int:
@@ -151,28 +194,14 @@ class FastOrderedSet:
         - If not found, raises a `ValueError`.
         """
         if value in self.index_map:
-            return self.index_map[value]
+            return self.items.index(self.index_map[value])
         raise ValueError(f"'{value}' not found in FastOrderedSet")
-
-    def rebuild_index_map(self):
-        """Rebuild the index mapping (needed after removal or sorting). O(N)."""
-        self.index_map = {item.path_nfd: idx for idx, item in enumerate(self.items)}
-
-    def shuffle(self):
-        """Randomly shuffle elements while maintaining O(1) lookups. O(N)."""
-        random.shuffle(self.items)
-        self.rebuild_index_map()
-
-    def sort(self, key=None, reverse=False):
-        """Sort elements while maintaining index mapping. O(N log N)."""
-        self.items.sort(key=key, reverse=reverse)
-        self.rebuild_index_map()
 
     def __len__(self):
         """Return the number of elements. O(1)."""
         return len(self.items)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> ImageFile:
         """
         Retrieve:
         - String when given an integer index. O(1).
@@ -180,12 +209,7 @@ class FastOrderedSet:
         """
         if isinstance(index, int):
             return self.items[index]  # O(1)
-        elif isinstance(index, slice):
-            subset = FastOrderedSet()
-            subset.items = self.items[index]
-            subset.rebuild_index_map()
-            return subset
-        raise TypeError("Index must be an integer or slice")
+        raise TypeError("Index must be an integer")
 
     def __iter__(self):
         """Iterate through elements in order. O(N)."""
@@ -360,11 +384,13 @@ class ImageViewer(QMainWindow):
         self.createMenus()
 
         # mtime order: images sorted by last modified time (newest first).
-        self.mtimeOrderSet = FastOrderedSet()
+        self.mtimeOrderSet = FastOrderedSet(
+            key_func=lambda p: -1 * p.entry.stat().st_mtime
+        )
         # random order: images in random order (can be changed later to filename order).
         self.randomOrderSet = FastOrderedSet()
         # fname order: file name order
-        self.fnameOrderSet = FastOrderedSet()
+        self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.entry.name)
 
         self.verticalOrderSet = self.mtimeOrderSet
         self.horizontalOrderSet = self.randomOrderSet
@@ -597,9 +623,9 @@ class ImageViewer(QMainWindow):
         imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
         folder = unicodedata.normalize("NFD", folder)
         imageFiles = []
-        for f in os.scandir(folder):
-            if any(f.name.lower().endswith("." + ext) for ext in imageExtensions):
-                imageFiles.append(f)
+        for entry in os.scandir(folder):
+            if any(entry.name.lower().endswith("." + ext) for ext in imageExtensions):
+                imageFiles.append(ImageFile(entry))
         if imageFiles:
             # Store the current vertical and horizontal order types
             vscroll = self.get_order_name(self.verticalOrderSet)
@@ -608,15 +634,12 @@ class ImageViewer(QMainWindow):
             # fname order: Sort by file name.
             self.fnameOrderSet.clear()
             self.fnameOrderSet.update(imageFiles)
-            self.fnameOrderSet.sort(key=lambda p: p.entry.name)
             # mtime order: Sort by last modified time (newest first).
             self.mtimeOrderSet.clear()
             self.mtimeOrderSet.update(imageFiles)
-            self.mtimeOrderSet.sort(key=lambda p: p.entry.stat().st_mtime, reverse=True)
             # random order: Shuffle images randomly.
             self.randomOrderSet.clear()
             self.randomOrderSet.update(imageFiles)
-            self.randomOrderSet.shuffle()
 
             # Initialize indices using the first image in mtime order.
             currentFile = self.mtimeOrderSet[0]
