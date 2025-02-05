@@ -101,6 +101,121 @@ def copy_with_unique_name(src, dst_dir):
     return dst_path
 
 
+class FastOrderedSet:
+    """
+    An ordered set that mimics list behavior while ensuring unique elements.
+    """
+
+    def __init__(self, iterable=None):
+        """Initialize an ordered set. O(N) if iterable is provided, otherwise O(1)."""
+        self.items = []  # List for integer-based access
+        self.index_map = {}  # Dictionary for string-based access
+        if iterable:
+            self.update(iterable)
+
+    def add(self, item):
+        """Add an item (avoid duplicates)"""
+        if item not in self.index_map:
+            self.index_map[item] = len(self.items)
+            self.items.append(item)
+
+    def update(self, sequence):
+        """
+        Add all elements from a sequence to the set. O(N).
+
+        - Iterates through the sequence and adds new elements.
+        - Duplicates are ignored.
+        """
+        for item in sequence:
+            self.add(item)
+
+    def remove(self, item):
+        """Remove an item (O(N), as list deletion requires index rebuilding)"""
+        if item in self.index_map:
+            index = self.index_map.pop(item)  # O(1)
+            del self.items[index]  # O(N) (shifting elements)
+            self.rebuild_index_map()  # O(N)
+
+    def clear(self):
+        """Remove all elements from the set. O(1)."""
+        self.items.clear()
+        self.index_map.clear()
+
+    def index(self, value):
+        """
+        Return the index of a given string value. O(1).
+
+        - If found, returns the index.
+        - If not found, raises a `ValueError`.
+        """
+        if value in self.index_map:
+            return self.index_map[value]
+        raise ValueError(f"'{value}' not found in FastOrderedSet")
+
+    def rebuild_index_map(self):
+        """Rebuild the index mapping (needed after removal or sorting). O(N)."""
+        self.index_map = {item: idx for idx, item in enumerate(self.items)}
+
+    def shuffle(self):
+        """Randomly shuffle elements while maintaining O(1) lookups. O(N)."""
+        random.shuffle(self.items)
+        self.rebuild_index_map()
+
+    def sort(self, key=None, reverse=False):
+        """Sort elements while maintaining index mapping. O(N log N)."""
+        self.items.sort(key=key, reverse=reverse)
+        self.rebuild_index_map()
+
+    def pop(self):
+        """Remove and return the last item. O(1)."""
+        if not self.items:
+            raise IndexError("pop from empty FastOrderedSet")
+        item = self.items.pop()
+        del self.index_map[item]
+        return item
+
+    def __len__(self):
+        """Return the number of elements. O(1)."""
+        return len(self.items)
+
+    def __getitem__(self, index):
+        """
+        Retrieve:
+        - String when given an integer index. O(1).
+        - Slice when given a slice. O(K), where K is the slice size.
+        """
+        if isinstance(index, int):
+            return self.items[index]  # O(1)
+        elif isinstance(index, slice):
+            return FastOrderedSet(self.items[index])  # O(K)
+        raise TypeError("Index must be an integer or slice")
+
+    def __setitem__(self, index, value):
+        """Replace an existing item at a specific index. O(1)."""
+        if not isinstance(index, int):
+            raise TypeError("Index must be an integer")
+
+        old_value = self.items[index]
+        if value in self.index_map and value != old_value:
+            raise ValueError(f"'{value}' already exists in FastOrderedSet")
+
+        self.items[index] = value
+        del self.index_map[old_value]
+        self.index_map[value] = index
+
+    def __contains__(self, item):
+        """Check if an item exists in the set. O(1)."""
+        return item in self.index_map
+
+    def __iter__(self):
+        """Iterate through elements in order. O(N)."""
+        return iter(self.items)
+
+    def __repr__(self):
+        """Return a string representation of the set. O(N)."""
+        return f"FastOrderedSet({self.items})"
+
+
 class VerticalGauge(QWidget):
     """
     Gauge for vertical scrolling (displayed on the left edge of the screen).
@@ -267,14 +382,14 @@ class ImageViewer(QMainWindow):
         # Lists for image file paths.
         self.allImages = []  # Unsorted list of image file paths.
         # mtime order: images sorted by last modified time (newest first).
-        self.mtimeOrder = []
+        self.mtimeOrderSet = FastOrderedSet()
         # random order: images in random order (can be changed later to filename order).
-        self.randomOrder = []
+        self.randomOrderSet = FastOrderedSet()
         # fname order: file name order
-        self.fnameOrder = []
+        self.fnameOrderSet = FastOrderedSet()
 
-        self.verticalOrder = self.mtimeOrder
-        self.horizontalOrder = self.randomOrder
+        self.verticalOrderSet = self.mtimeOrderSet
+        self.horizontalOrderSet = self.randomOrderSet
 
         # Store the currently loaded image (original, unscaled) and the current file path.
         self.originalPixmap = None
@@ -385,23 +500,23 @@ class ImageViewer(QMainWindow):
 
     def get_order_name(self, order):
         """Return the order type as a string based on the list object"""
-        if order is self.mtimeOrder:
+        if order is self.mtimeOrderSet:
             return "mtime"
-        elif order is self.fnameOrder:
+        elif order is self.fnameOrderSet:
             return "fname"
-        elif order is self.randomOrder:
+        elif order is self.randomOrderSet:
             return "random"
         return "mtime"  # Default in case of an unexpected value
 
     def get_order_by_name(self, name, default=None):
         """Return the corresponding order list based on the given string"""
         if name == "mtime":
-            return self.mtimeOrder
+            return self.mtimeOrderSet
         elif name == "fname":
-            return self.fnameOrder
+            return self.fnameOrderSet
         elif name == "random":
-            return self.randomOrder
-        return default if default is not None else self.mtimeOrder
+            return self.randomOrderSet
+        return default if default is not None else self.mtimeOrderSet
 
     def toggled_order(self, current, other):
         """
@@ -420,23 +535,23 @@ class ImageViewer(QMainWindow):
         return "mtime"
 
     def onVScrollClicked(self):
-        if self.verticalOrder:
+        if self.verticalOrderSet:
             # Get the current vertical and horizontal order as strings
-            current = self.get_order_name(self.verticalOrder)
-            other = self.get_order_name(self.horizontalOrder)
+            current = self.get_order_name(self.verticalOrderSet)
+            other = self.get_order_name(self.horizontalOrderSet)
             # Determine the next order to set
             new_order_name = self.toggled_order(current, other)
-            self.verticalOrder = self.get_order_by_name(new_order_name)
+            self.verticalOrderSet = self.get_order_by_name(new_order_name)
             self.VScroll.setText("VScroll: " + new_order_name)
 
     def onHScrollClicked(self):
-        if self.horizontalOrder:
+        if self.horizontalOrderSet:
             # Get the current horizontal and vertical order as strings
-            current = self.get_order_name(self.horizontalOrder)
-            other = self.get_order_name(self.verticalOrder)
+            current = self.get_order_name(self.horizontalOrderSet)
+            other = self.get_order_name(self.verticalOrderSet)
             # Determine the next order to set
             new_order_name = self.toggled_order(current, other)
-            self.horizontalOrder = self.get_order_by_name(new_order_name)
+            self.horizontalOrderSet = self.get_order_by_name(new_order_name)
             self.HScroll.setText("HScroll: " + new_order_name)
 
     def createActions(self):
@@ -511,24 +626,30 @@ class ImageViewer(QMainWindow):
         ]
         if imageFiles:
             # Store the current vertical and horizontal order types
-            vscroll = self.get_order_name(self.verticalOrder)
-            hscroll = self.get_order_name(self.horizontalOrder)
+            vscroll = self.get_order_name(self.verticalOrderSet)
+            hscroll = self.get_order_name(self.horizontalOrderSet)
 
             self.allImages = imageFiles
             # fname order: Sort by file name.
-            self.fnameOrder = sorted(self.allImages)
+            self.fnameOrderSet.clear()
+            self.fnameOrderSet.update(self.allImages)
+            self.fnameOrderSet.sort()
             # mtime order: Sort by last modified time (newest first).
-            self.mtimeOrder = sorted(
-                self.allImages, key=lambda p: os.path.getmtime(p), reverse=True
-            )
+            self.mtimeOrderSet.clear()
+            self.mtimeOrderSet.update(self.allImages)
+            self.mtimeOrderSet.sort(key=lambda p: os.path.getmtime(p), reverse=True)
             # random order: Shuffle images randomly.
-            self.randomOrder = list(self.allImages)
-            random.shuffle(self.randomOrder)
-            # Initialize indices using the first image in mtime order.
-            currentFile = self.mtimeOrder[0]
+            self.randomOrderSet.clear()
+            self.randomOrderSet.update(self.allImages)
+            self.randomOrderSet.shuffle()
 
-            self.verticalOrder = self.get_order_by_name(vscroll, self.mtimeOrder)
-            self.horizontalOrder = self.get_order_by_name(hscroll, self.randomOrder)
+            # Initialize indices using the first image in mtime order.
+            currentFile = self.mtimeOrderSet[0]
+
+            self.verticalOrderSet = self.get_order_by_name(vscroll, self.mtimeOrderSet)
+            self.horizontalOrderSet = self.get_order_by_name(
+                hscroll, self.randomOrderSet
+            )
 
             self.loadImageFromFile(currentFile)
 
@@ -571,20 +692,20 @@ class ImageViewer(QMainWindow):
         """
         Show the next image in vertical order (sorted by last modified time).
         """
-        if self.verticalOrder:
-            index = self.verticalOrder.index(self.currentFile)
-            index = (index + 1) % len(self.verticalOrder)
-            currentFile = self.verticalOrder[index]
+        if self.verticalOrderSet:
+            index = self.verticalOrderSet.index(self.currentFile)
+            index = (index + 1) % len(self.verticalOrderSet)
+            currentFile = self.verticalOrderSet[index]
             self.loadImageFromFile(currentFile)
 
     def verticalPreviousImage(self):
         """
         Show the previous image in vertical order (sorted by last modified time).
         """
-        if self.verticalOrder:
-            index = self.verticalOrder.index(self.currentFile)
-            index = (index - 1) % len(self.verticalOrder)
-            currentFile = self.verticalOrder[index]
+        if self.verticalOrderSet:
+            index = self.verticalOrderSet.index(self.currentFile)
+            index = (index - 1) % len(self.verticalOrderSet)
+            currentFile = self.verticalOrderSet[index]
             self.loadImageFromFile(currentFile)
 
     # --- Horizontal Navigation (random order) ---
@@ -592,20 +713,20 @@ class ImageViewer(QMainWindow):
         """
         Show the next image in horizontal order (random order).
         """
-        if self.horizontalOrder:
-            index = self.horizontalOrder.index(self.currentFile)
-            index = (index + 1) % len(self.horizontalOrder)
-            currentFile = self.horizontalOrder[index]
+        if self.horizontalOrderSet:
+            index = self.horizontalOrderSet.index(self.currentFile)
+            index = (index + 1) % len(self.horizontalOrderSet)
+            currentFile = self.horizontalOrderSet[index]
             self.loadImageFromFile(currentFile)
 
     def horizontalPreviousImage(self):
         """
         Show the previous image in horizontal order (random order).
         """
-        if self.horizontalOrder:
-            index = self.horizontalOrder.index(self.currentFile)
-            index = (index - 1) % len(self.horizontalOrder)
-            currentFile = self.horizontalOrder[index]
+        if self.horizontalOrderSet:
+            index = self.horizontalOrderSet.index(self.currentFile)
+            index = (index - 1) % len(self.horizontalOrderSet)
+            currentFile = self.horizontalOrderSet[index]
             self.loadImageFromFile(currentFile)
 
     def keyPressEvent(self, event):
@@ -810,6 +931,9 @@ class ImageViewer(QMainWindow):
                     self.loadImagesFromFolder(folder)
                     self.loadImageFromFile(filePath)
                     break
+            elif os.path.isdir(filePath):
+                self.loadImagesFromFolder(filePath)
+                break
 
     def resizeEvent(self, event):
         """
@@ -981,9 +1105,9 @@ if __name__ == "__main__":
             folder = os.path.dirname(imagePath)
             viewer.loadImagesFromFolder(folder)
             try:
-                viewer.mtimeOrder.index(imagePath)
+                viewer.mtimeOrderSet.index(imagePath)
             except ValueError:
-                viewer.loadImageFromFile(viewer.mtimeOrder[0])
+                viewer.loadImageFromFile(viewer.mtimeOrderSet[0])
                 viewer.statusBar().showMessage(f"NotFound file {imagePath}", 10000)
             else:
                 viewer.loadImageFromFile(imagePath)
