@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import unicodedata
 from datetime import datetime
+from typing import Dict, List
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -101,6 +102,11 @@ def copy_with_unique_name(src, dst_dir):
     return dst_path
 
 
+class ImageFile:
+    entry: os.DirEntry
+    path_nfd: str
+
+
 class FastOrderedSet:
     """
     An ordered set that mimics list behavior while ensuring unique elements.
@@ -108,15 +114,18 @@ class FastOrderedSet:
 
     def __init__(self, iterable=None):
         """Initialize an ordered set. O(N) if iterable is provided, otherwise O(1)."""
-        self.items = []  # List for integer-based access
-        self.index_map = {}  # Dictionary for string-based access
+        self.items: List[ImageFile] = []  # List for integer-based access
+        self.index_map: Dict[str, int] = {}  # Dictionary for string-based access
         if iterable:
             self.update(iterable)
 
-    def add(self, item):
+    def add(self, entry: os.DirEntry):
         """Add an item (avoid duplicates)"""
-        if item not in self.index_map:
-            self.index_map[item] = len(self.items)
+        item = ImageFile()
+        item.entry = entry
+        item.path_nfd = unicodedata.normalize("NFD", entry.path)
+        if item.path_nfd not in self.index_map:
+            self.index_map[item.path_nfd] = len(self.items)
             self.items.append(item)
 
     def update(self, sequence):
@@ -129,19 +138,12 @@ class FastOrderedSet:
         for item in sequence:
             self.add(item)
 
-    def remove(self, item):
-        """Remove an item (O(N), as list deletion requires index rebuilding)"""
-        if item in self.index_map:
-            index = self.index_map.pop(item)  # O(1)
-            del self.items[index]  # O(N) (shifting elements)
-            self.rebuild_index_map()  # O(N)
-
     def clear(self):
         """Remove all elements from the set. O(1)."""
         self.items.clear()
         self.index_map.clear()
 
-    def index(self, value):
+    def index(self, value: str) -> int:
         """
         Return the index of a given string value. O(1).
 
@@ -154,7 +156,7 @@ class FastOrderedSet:
 
     def rebuild_index_map(self):
         """Rebuild the index mapping (needed after removal or sorting). O(N)."""
-        self.index_map = {item: idx for idx, item in enumerate(self.items)}
+        self.index_map = {item.path_nfd: idx for idx, item in enumerate(self.items)}
 
     def shuffle(self):
         """Randomly shuffle elements while maintaining O(1) lookups. O(N)."""
@@ -165,14 +167,6 @@ class FastOrderedSet:
         """Sort elements while maintaining index mapping. O(N log N)."""
         self.items.sort(key=key, reverse=reverse)
         self.rebuild_index_map()
-
-    def pop(self):
-        """Remove and return the last item. O(1)."""
-        if not self.items:
-            raise IndexError("pop from empty FastOrderedSet")
-        item = self.items.pop()
-        del self.index_map[item]
-        return item
 
     def __len__(self):
         """Return the number of elements. O(1)."""
@@ -187,25 +181,11 @@ class FastOrderedSet:
         if isinstance(index, int):
             return self.items[index]  # O(1)
         elif isinstance(index, slice):
-            return FastOrderedSet(self.items[index])  # O(K)
+            subset = FastOrderedSet()
+            subset.items = self.items[index]
+            subset.rebuild_index_map()
+            return subset
         raise TypeError("Index must be an integer or slice")
-
-    def __setitem__(self, index, value):
-        """Replace an existing item at a specific index. O(1)."""
-        if not isinstance(index, int):
-            raise TypeError("Index must be an integer")
-
-        old_value = self.items[index]
-        if value in self.index_map and value != old_value:
-            raise ValueError(f"'{value}' already exists in FastOrderedSet")
-
-        self.items[index] = value
-        del self.index_map[old_value]
-        self.index_map[value] = index
-
-    def __contains__(self, item):
-        """Check if an item exists in the set. O(1)."""
-        return item in self.index_map
 
     def __iter__(self):
         """Iterate through elements in order. O(N)."""
@@ -379,8 +359,6 @@ class ImageViewer(QMainWindow):
         # Create the menu bar and add the "File" menu with several actions.
         self.createMenus()
 
-        # Lists for image file paths.
-        self.allImages = []  # Unsorted list of image file paths.
         # mtime order: images sorted by last modified time (newest first).
         self.mtimeOrderSet = FastOrderedSet()
         # random order: images in random order (can be changed later to filename order).
@@ -393,7 +371,7 @@ class ImageViewer(QMainWindow):
 
         # Store the currently loaded image (original, unscaled) and the current file path.
         self.originalPixmap = None
-        self.currentFile = None
+        self.currentPath = None
 
         # The current scale factor.
         self.scaleFactor = 1.0
@@ -486,9 +464,9 @@ class ImageViewer(QMainWindow):
         """
         Reveal the currently displayed file in Finder (macOS).
         """
-        if self.currentFile:
+        if self.currentPath:
             try:
-                subprocess.call(["open", "-R", self.currentFile])
+                subprocess.call(["open", "-R", self.currentPath])
             except Exception as e:
                 print("Error revealing file in Finder:", e)
 
@@ -618,29 +596,26 @@ class ImageViewer(QMainWindow):
         supportedFormats = QImageReader.supportedImageFormats()
         imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
         folder = unicodedata.normalize("NFD", folder)
-        files = os.listdir(folder)
-        imageFiles = [
-            os.path.join(folder, unicodedata.normalize("NFD", f))
-            for f in files
-            if any(f.lower().endswith("." + ext) for ext in imageExtensions)
-        ]
+        imageFiles = []
+        for f in os.scandir(folder):
+            if any(f.name.lower().endswith("." + ext) for ext in imageExtensions):
+                imageFiles.append(f)
         if imageFiles:
             # Store the current vertical and horizontal order types
             vscroll = self.get_order_name(self.verticalOrderSet)
             hscroll = self.get_order_name(self.horizontalOrderSet)
 
-            self.allImages = imageFiles
             # fname order: Sort by file name.
             self.fnameOrderSet.clear()
-            self.fnameOrderSet.update(self.allImages)
-            self.fnameOrderSet.sort()
+            self.fnameOrderSet.update(imageFiles)
+            self.fnameOrderSet.sort(key=lambda p: p.entry.name)
             # mtime order: Sort by last modified time (newest first).
             self.mtimeOrderSet.clear()
-            self.mtimeOrderSet.update(self.allImages)
-            self.mtimeOrderSet.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            self.mtimeOrderSet.update(imageFiles)
+            self.mtimeOrderSet.sort(key=lambda p: p.entry.stat().st_mtime, reverse=True)
             # random order: Shuffle images randomly.
             self.randomOrderSet.clear()
-            self.randomOrderSet.update(self.allImages)
+            self.randomOrderSet.update(imageFiles)
             self.randomOrderSet.shuffle()
 
             # Initialize indices using the first image in mtime order.
@@ -651,7 +626,7 @@ class ImageViewer(QMainWindow):
                 hscroll, self.randomOrderSet
             )
 
-            self.loadImageFromFile(currentFile)
+            self.loadImageFromFile(currentFile.path_nfd)
 
     def loadImageFromFile(self, filePath):
         """
@@ -659,7 +634,7 @@ class ImageViewer(QMainWindow):
 
         :param filePath: The full path to the image file.
         """
-        self.currentFile = unicodedata.normalize("NFD", filePath)
+        self.currentPath = unicodedata.normalize("NFD", filePath)
         image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
@@ -693,20 +668,20 @@ class ImageViewer(QMainWindow):
         Show the next image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentFile)
+            index = self.verticalOrderSet.index(self.currentPath)
             index = (index + 1) % len(self.verticalOrderSet)
             currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            self.loadImageFromFile(currentFile.path_nfd)
 
     def verticalPreviousImage(self):
         """
         Show the previous image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentFile)
+            index = self.verticalOrderSet.index(self.currentPath)
             index = (index - 1) % len(self.verticalOrderSet)
             currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            self.loadImageFromFile(currentFile.path_nfd)
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -714,20 +689,20 @@ class ImageViewer(QMainWindow):
         Show the next image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentFile)
+            index = self.horizontalOrderSet.index(self.currentPath)
             index = (index + 1) % len(self.horizontalOrderSet)
             currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            self.loadImageFromFile(currentFile.path_nfd)
 
     def horizontalPreviousImage(self):
         """
         Show the previous image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentFile)
+            index = self.horizontalOrderSet.index(self.currentPath)
             index = (index - 1) % len(self.horizontalOrderSet)
             currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            self.loadImageFromFile(currentFile.path_nfd)
 
     def keyPressEvent(self, event):
         """
@@ -900,9 +875,9 @@ class ImageViewer(QMainWindow):
         revealAction = menu.addAction("Reveal in Finder")
         action = menu.exec_(event.globalPos())
         if action == revealAction:
-            if self.currentFile is not None:
+            if self.currentPath is not None:
                 try:
-                    subprocess.call(["open", "-R", self.currentFile])
+                    subprocess.call(["open", "-R", self.currentPath])
                 except Exception as e:
                     print("Error revealing file in Finder:", e)
 
@@ -1025,10 +1000,10 @@ class ImageViewer(QMainWindow):
             dest = folder
             self.copyDestinations[str(index)] = dest
             self.updateCopyList()
-        if self.currentFile:
-            print(f"Copying '{self.currentFile}' to destination '{dest}'")
+        if self.currentPath:
+            print(f"Copying '{self.currentPath}' to destination '{dest}'")
             try:
-                copy_with_unique_name(self.currentFile, dest)
+                copy_with_unique_name(self.currentPath, dest)
                 self.statusBar().showMessage(f"Copied file to {dest}", 3000)
             except Exception as e:
                 self.statusBar().showMessage(f"Copy failed: {e}", 3000)
@@ -1107,7 +1082,7 @@ if __name__ == "__main__":
             try:
                 viewer.mtimeOrderSet.index(imagePath)
             except ValueError:
-                viewer.loadImageFromFile(viewer.mtimeOrderSet[0])
+                viewer.loadImageFromFile(viewer.mtimeOrderSet[0].path_nfd)
                 viewer.statusBar().showMessage(f"NotFound file {imagePath}", 10000)
             else:
                 viewer.loadImageFromFile(imagePath)
