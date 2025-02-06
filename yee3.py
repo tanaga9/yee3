@@ -139,6 +139,9 @@ class ImageFile:
         self.entry = entry
         self.path_nfd = unicodedata.normalize("NFD", entry.path)
 
+    def __str__(self):
+        return self.path_nfd
+
 
 class FastOrderedSet:
     """
@@ -161,7 +164,7 @@ class FastOrderedSet:
 
         if self.key_func is None:
             # Append if no custom sorting is required
-            index = len(self.items)
+            index = random.randint(0, len(self.items))
         else:
             key = self.key_func(item)
             index = self.keys.bisect_left(key)  # Get insertion index (O(log N))
