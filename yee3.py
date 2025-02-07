@@ -132,12 +132,23 @@ class SortedList:
 
 
 class ImageFile:
-    entry: os.DirEntry
+    entry: os.DirEntry  # | None
     path_nfd: str
+    stat_result: os.stat_result
+    name: str
 
-    def __init__(self, entry: os.DirEntry):
+    def __init__(self, entry: os.DirEntry = None, path: str = ""):
         self.entry = entry
-        self.path_nfd = unicodedata.normalize("NFD", entry.path)
+        if entry:
+            self.path_nfd = unicodedata.normalize("NFD", entry.path)
+            self.stat_result = entry.stat()
+        elif path:
+            path = os.path.abspath(path)
+            self.path_nfd = unicodedata.normalize("NFD", path)
+            self.stat_result = os.stat(self.path_nfd)
+        else:
+            raise ValueError("Either entry or path must be provided")
+        self.name = os.path.basename(self.path_nfd)
 
     def __str__(self):
         return self.path_nfd
@@ -388,12 +399,12 @@ class ImageViewer(QMainWindow):
 
         # mtime order: images sorted by last modified time (newest first).
         self.mtimeOrderSet = FastOrderedSet(
-            key_func=lambda p: -1 * p.entry.stat().st_mtime
+            key_func=lambda p: -1 * p.stat_result.st_mtime
         )
         # random order: images in random order (can be changed later to filename order).
         self.randomOrderSet = FastOrderedSet()
         # fname order: file name order
-        self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.entry.name)
+        self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.name)
 
         self.verticalOrderSet = self.mtimeOrderSet
         self.horizontalOrderSet = self.randomOrderSet
@@ -624,10 +635,17 @@ class ImageViewer(QMainWindow):
         supportedFormats = QImageReader.supportedImageFormats()
         imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
         folder = unicodedata.normalize("NFD", folder)
+        is_supported_image_format = lambda name: any(
+            name.lower().endswith("." + ext) for ext in imageExtensions
+        )
         imageFiles = []
+        if filePath is not None:
+            filePath = os.path.abspath(filePath)
+            if is_supported_image_format(filePath):
+                imageFiles.append(ImageFile(path=filePath))
         for entry in os.scandir(folder):
-            if any(entry.name.lower().endswith("." + ext) for ext in imageExtensions):
-                imageFiles.append(ImageFile(entry))
+            if is_supported_image_format(entry.name):
+                imageFiles.append(ImageFile(entry=entry))
         if imageFiles:
             # Store the current vertical and horizontal order types
             vscroll = self.get_order_name(self.verticalOrderSet)
