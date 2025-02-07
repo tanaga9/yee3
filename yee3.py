@@ -9,6 +9,7 @@ import subprocess
 import unicodedata
 from datetime import datetime
 from typing import Dict, List
+from dataclasses import dataclass, asdict
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -25,6 +26,7 @@ from PyQt5.QtWidgets import (
     QStatusBar,
     QToolButton,
     QWidget,
+    QWidgetAction,
 )
 from PyQt5.QtGui import (
     QPixmap,
@@ -35,7 +37,7 @@ from PyQt5.QtGui import (
     QColor,
     QBrush,
 )
-from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint
+from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint, QThread, pyqtSignal
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -141,17 +143,33 @@ class ImageFile:
         self.entry = entry
         if entry:
             self.path_nfd = unicodedata.normalize("NFD", entry.path)
-            self.stat_result = entry.stat()
         elif path:
             path = os.path.abspath(path)
             self.path_nfd = unicodedata.normalize("NFD", path)
-            self.stat_result = os.stat(self.path_nfd)
         else:
             raise ValueError("Either entry or path must be provided")
         self.name = os.path.basename(self.path_nfd)
 
+    def stat(self):
+        try:
+            if self.entry:
+                self.stat_result = self.entry.stat()
+            else:
+                self.stat_result = os.stat(self.path_nfd)
+        except FileNotFoundError:
+            self.stat_result = None
+            return None
+        return self.stat_result
+
     def __str__(self):
         return self.path_nfd
+
+
+@dataclass
+class ImageData:
+    name: str
+    path_nfd: int
+    st_mtime: float
 
 
 class FastOrderedSet:
@@ -161,14 +179,14 @@ class FastOrderedSet:
 
     def __init__(self, iterable=None, key_func=None):
         """Initialize an ordered set. O(N) if iterable is provided, otherwise O(1)."""
-        self.items: List[ImageFile] = []  # List for index-based access
+        self.items: List[ImageData] = []  # List for index-based access
         self.keys = SortedList()  # Binary search optimized
-        self.index_map: Dict[str, ImageFile] = {}  # Map paths to objects
+        self.index_map: Dict[str, ImageData] = {}  # Map paths to objects
         self.key_func = key_func
         if iterable:
             self.update(iterable)
 
-    def add(self, item: ImageFile):
+    def add(self, item: ImageData):
         """Add an item while ensuring uniqueness (O(log N))"""
         if item.path_nfd in self.index_map:
             return  # Duplicate, skip insertion
@@ -215,7 +233,7 @@ class FastOrderedSet:
         """Return the number of elements. O(1)."""
         return len(self.items)
 
-    def __getitem__(self, index: int) -> ImageFile:
+    def __getitem__(self, index: int) -> ImageData:
         """
         Retrieve:
         - String when given an integer index. O(1).
@@ -320,6 +338,62 @@ class HorizontalGauge(QWidget):
         painter.drawRect(int(x_pos), 0, int(gauge_length), int(self.bar_height))
 
 
+class ImageLoaderWorker(QThread):
+    imageLoaded = pyqtSignal(str)
+    finishedLoading = pyqtSignal()
+
+    def __init__(self, folder, filePath=None, parent=None):
+        super().__init__(parent)
+        self.folder = unicodedata.normalize("NFD", folder)
+        self.filePath = os.path.abspath(filePath) if filePath is not None else None
+
+    def run(self):
+        supportedFormats = QImageReader.supportedImageFormats()
+        imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
+
+        is_supported_image_format = lambda name: any(
+            name.lower().endswith("." + ext) for ext in imageExtensions
+        )
+        if self.filePath is not None:
+            imagefile = ImageFile(path=self.filePath)
+            if is_supported_image_format(imagefile.name):
+                if imagefile.stat():
+                    imageData = ImageData(
+                        name=imagefile.name,
+                        path_nfd=imagefile.path_nfd,
+                        st_mtime=imagefile.stat_result.st_mtime,
+                    )
+                    self.imageLoaded.emit(json.dumps([asdict(imageData)]))
+        data = []
+        last_emit_timestamp = datetime.now()
+        try:
+            for entry in os.scandir(self.folder):
+                imagefile = ImageFile(entry=entry)
+                if is_supported_image_format(imagefile.name):
+                    if imagefile.stat():
+                        imageData = ImageData(
+                            name=imagefile.name,
+                            path_nfd=imagefile.path_nfd,
+                            st_mtime=imagefile.stat_result.st_mtime,
+                        )
+                        data.append(asdict(imageData))
+                now = datetime.now()
+                if (
+                    len(data) >= 100
+                    or (now - last_emit_timestamp).total_seconds() > 0.25
+                ):
+                    if len(data) > 0:
+                        self.imageLoaded.emit(json.dumps(data))
+                        data = []
+                    self.msleep(10)
+                    last_emit_timestamp = now
+            if len(data) > 0:
+                self.imageLoaded.emit(json.dumps(data))
+        except Exception as e:
+            print("Error during folder scanning:", e)
+        self.finishedLoading.emit()
+
+
 class ImageViewer(QMainWindow):
     """
     ImageViewer is a PyQt5 application that displays images from a selected folder.
@@ -398,9 +472,7 @@ class ImageViewer(QMainWindow):
         self.createMenus()
 
         # mtime order: images sorted by last modified time (newest first).
-        self.mtimeOrderSet = FastOrderedSet(
-            key_func=lambda p: -1 * p.stat_result.st_mtime
-        )
+        self.mtimeOrderSet = FastOrderedSet(key_func=lambda p: -1 * p.st_mtime)
         # random order: images in random order (can be changed later to filename order).
         self.randomOrderSet = FastOrderedSet()
         # fname order: file name order
@@ -453,6 +525,8 @@ class ImageViewer(QMainWindow):
         self.decayTimer = QTimer(self)
         self.decayTimer.timeout.connect(self.decayScrollValues)
         self.decayTimer.start(50)  # Called every 50ms
+
+        self.lazyLoadingInProgress = False
 
     def createMenus(self):
         """
@@ -603,6 +677,9 @@ class ImageViewer(QMainWindow):
         self.freeScroll.setCheckable(True)
         self.freeScroll.setChecked(False)
 
+        self.label = QLabel("count: ")
+        self.label.setFixedWidth(150)
+
     def createToolbar(self):
         """
         Create a toolbar and add the actions for opening a folder and zooming.
@@ -616,6 +693,10 @@ class ImageViewer(QMainWindow):
         toolbar.addWidget(self.VScroll)
         toolbar.addWidget(self.HScroll)
         toolbar.addWidget(self.freeScroll)
+
+        label_action = QWidgetAction(toolbar)
+        label_action.setDefaultWidget(self.label)
+        toolbar.addAction(label_action)
 
     def openFolder(self):
         """
@@ -632,49 +713,46 @@ class ImageViewer(QMainWindow):
 
         :param folder: The folder from which to load images.
         """
-        supportedFormats = QImageReader.supportedImageFormats()
-        imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
-        folder = unicodedata.normalize("NFD", folder)
-        is_supported_image_format = lambda name: any(
-            name.lower().endswith("." + ext) for ext in imageExtensions
-        )
-        imageFiles = []
-        if filePath is not None:
-            filePath = os.path.abspath(filePath)
-            if is_supported_image_format(filePath):
-                imageFiles.append(ImageFile(path=filePath))
-        for entry in os.scandir(folder):
-            if is_supported_image_format(entry.name):
-                imageFiles.append(ImageFile(entry=entry))
-        if imageFiles:
-            # Store the current vertical and horizontal order types
-            vscroll = self.get_order_name(self.verticalOrderSet)
-            hscroll = self.get_order_name(self.horizontalOrderSet)
 
-            # fname order: Sort by file name.
-            self.fnameOrderSet.clear()
-            self.fnameOrderSet.update(imageFiles)
-            # mtime order: Sort by last modified time (newest first).
-            self.mtimeOrderSet.clear()
-            self.mtimeOrderSet.update(imageFiles)
-            # random order: Shuffle images randomly.
-            self.randomOrderSet.clear()
-            self.randomOrderSet.update(imageFiles)
+        if self.lazyLoadingInProgress:
+            return
+        self.lazyLoadingInProgress = True
 
-            index = 0
-            if filePath is not None:
-                filePath = unicodedata.normalize("NFD", filePath)
-                index = self.mtimeOrderSet.index(filePath)
+        # Clear all image sets
+        self.fnameOrderSet.clear()
+        self.mtimeOrderSet.clear()
+        self.randomOrderSet.clear()
 
-            # Initialize indices using the first image in mtime order.
-            currentFile = self.mtimeOrderSet[index]
+        self.statusBar().showMessage("loading...", 2000)
 
-            self.verticalOrderSet = self.get_order_by_name(vscroll, self.mtimeOrderSet)
-            self.horizontalOrderSet = self.get_order_by_name(
-                hscroll, self.randomOrderSet
-            )
+        self.imageLoader = ImageLoaderWorker(folder, filePath)
+        self.imageLoader.imageLoaded.connect(self.handleNewImage)
+        self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
+        self.imageLoader.start()
 
-            self.loadImageFromFile(currentFile.path_nfd)
+    def handleNewImage(self, imageDataListJson):
+        """ """
+
+        imageDataList = [ImageData(**i) for i in json.loads(imageDataListJson)]
+
+        existing_image_count = len(self.mtimeOrderSet)
+
+        self.fnameOrderSet.update(imageDataList)
+        self.mtimeOrderSet.update(imageDataList)
+        self.randomOrderSet.update(imageDataList)
+
+        # Load the first image if no image is currently displayed
+        if existing_image_count == 0 and imageDataList:
+            self.loadImageFromFile(imageDataList[0].path_nfd)
+
+        # self.statusBar().showMessage(f"Found file {imagePath}", 100)
+        self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
+
+    def finishLoadingImages(self):
+        """ """
+        self.lazyLoadingInProgress = False
+        self.statusBar().showMessage("Complete", 3000)
+        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
 
     def loadImageFromFile(self, filePath):
         """
@@ -1126,6 +1204,8 @@ if __name__ == "__main__":
         if os.path.isfile(imagePath):
             folder = os.path.dirname(imagePath)
             viewer.loadImagesFromFolder(folder, imagePath)
+        elif os.path.isdir(imagePath):
+            viewer.loadImagesFromFolder(imagePath)
 
     viewer.show()
     sys.exit(app.exec_())
