@@ -486,8 +486,7 @@ class ImageViewer(QMainWindow):
         )
         if filePath:
             folder = os.path.dirname(filePath)
-            self.loadImagesFromFolder(folder)
-            self.loadImageFromFile(filePath)
+            self.loadImagesFromFolder(folder, filePath)
 
     def revealInFinder(self):
         """
@@ -615,7 +614,7 @@ class ImageViewer(QMainWindow):
         if folder:
             self.loadImagesFromFolder(folder)
 
-    def loadImagesFromFolder(self, folder):
+    def loadImagesFromFolder(self, folder, filePath=None):
         """
         Load all image files from the specified folder, create two sort orders,
         and display the first image.
@@ -644,8 +643,13 @@ class ImageViewer(QMainWindow):
             self.randomOrderSet.clear()
             self.randomOrderSet.update(imageFiles)
 
+            index = 0
+            if filePath is not None:
+                filePath = unicodedata.normalize("NFD", filePath)
+                index = self.mtimeOrderSet.index(filePath)
+
             # Initialize indices using the first image in mtime order.
-            currentFile = self.mtimeOrderSet[0]
+            currentFile = self.mtimeOrderSet[index]
 
             self.verticalOrderSet = self.get_order_by_name(vscroll, self.mtimeOrderSet)
             self.horizontalOrderSet = self.get_order_by_name(
@@ -929,8 +933,7 @@ class ImageViewer(QMainWindow):
                 ]
                 if any(filePath.lower().endswith(ext) for ext in imageExtensions):
                     folder = os.path.dirname(filePath)
-                    self.loadImagesFromFolder(folder)
-                    self.loadImageFromFile(filePath)
+                    self.loadImagesFromFolder(folder, filePath)
                     break
             elif os.path.isdir(filePath):
                 self.loadImagesFromFolder(filePath)
@@ -1104,14 +1107,7 @@ if __name__ == "__main__":
         imagePath = unicodedata.normalize("NFD", sys.argv[1])
         if os.path.isfile(imagePath):
             folder = os.path.dirname(imagePath)
-            viewer.loadImagesFromFolder(folder)
-            try:
-                viewer.mtimeOrderSet.index(imagePath)
-            except ValueError:
-                viewer.loadImageFromFile(viewer.mtimeOrderSet[0].path_nfd)
-                viewer.statusBar().showMessage(f"NotFound file {imagePath}", 10000)
-            else:
-                viewer.loadImageFromFile(imagePath)
+            viewer.loadImagesFromFolder(folder, imagePath)
 
     viewer.show()
     sys.exit(app.exec_())
