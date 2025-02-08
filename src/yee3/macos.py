@@ -29,7 +29,8 @@ def main():
     if imagePath:
         windows.append(initialize_image_viewer(imagePath))
     else:
-        windows.append(initialize_image_viewer())
+        # windows.append(initialize_image_viewer())
+        pass
 
     sys.exit(app.exec_())
 

@@ -1,0 +1,24 @@
+--- build/yee3/macos/app/Yee 3.app/Contents/Info.plist	2025-02-08 17:54:46
++++ build/yee3/macos/app/Yee 3.app/Contents/Info.plist	2025-02-08 17:55:35
+@@ -26,6 +26,20 @@
+ 	<string>NSApplication</string>
+ 	<key>MainModule</key>
+ 	<string>yee3</string>
+-	
++	<key>CFBundleDocumentTypes</key>
++	<array>
++	    <dict>
++	        <key>CFBundleTypeExtensions</key>
++	        <array>
++	            <string>*</string>
++	        </array>
++	        <key>CFBundleTypeName</key>
++	        <string>Any File</string>
++	        <key>CFBundleTypeRole</key>
++	        <string>Editor</string>
++	        <key>LSHandlerRank</key>
++	        <string>Alternate</string>
++	    </dict>
++	</array>
+ </dict>
+ </plist>

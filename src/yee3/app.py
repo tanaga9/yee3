@@ -135,40 +135,40 @@ class SortedList:
 
 class ImageFile:
     entry: os.DirEntry  # | None
-    path_nfd: str
+    path_nf: str
     stat_result: os.stat_result
     name: str
 
     def __init__(self, entry: os.DirEntry = None, path: str = ""):
         self.entry = entry
         if entry:
-            self.path_nfd = unicodedata.normalize("NFD", entry.path)
+            self.path_nf = unicodedata.normalize("NFD", entry.path)
         elif path:
             path = os.path.abspath(path)
-            self.path_nfd = unicodedata.normalize("NFD", path)
+            self.path_nf = unicodedata.normalize("NFD", path)
         else:
             raise ValueError("Either entry or path must be provided")
-        self.name = os.path.basename(self.path_nfd)
+        self.name = os.path.basename(self.path_nf)
 
     def stat(self):
         try:
             if self.entry:
                 self.stat_result = self.entry.stat()
             else:
-                self.stat_result = os.stat(self.path_nfd)
+                self.stat_result = os.stat(self.path_nf)
         except FileNotFoundError:
             self.stat_result = None
             return None
         return self.stat_result
 
     def __str__(self):
-        return self.path_nfd
+        return self.path_nf
 
 
 @dataclass
 class ImageData:
     name: str
-    path_nfd: str
+    path_nf: str
     st_mtime: float
 
 
@@ -188,7 +188,7 @@ class FastOrderedSet:
 
     def add(self, item: ImageData):
         """Add an item while ensuring uniqueness (O(log N))"""
-        if item.path_nfd in self.index_map:
+        if item.path_nf in self.index_map:
             return  # Duplicate, skip insertion
 
         if self.key_func is None:
@@ -200,7 +200,7 @@ class FastOrderedSet:
             self.keys.add(key)  # Maintain sorted order (O(log N))
 
         self.items.insert(index, item)  # Insert at the correct position (O(N))
-        self.index_map[item.path_nfd] = item  # Store reference for quick lookup
+        self.index_map[item.path_nf] = item  # Store reference for quick lookup
 
     def update(self, sequence):
         """
@@ -360,7 +360,7 @@ class ImageLoaderWorker(QThread):
                 if imagefile.stat():
                     imageData = ImageData(
                         name=imagefile.name,
-                        path_nfd=imagefile.path_nfd,
+                        path_nf=imagefile.path_nf,
                         st_mtime=imagefile.stat_result.st_mtime,
                     )
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
@@ -373,7 +373,7 @@ class ImageLoaderWorker(QThread):
                     if imagefile.stat():
                         imageData = ImageData(
                             name=imagefile.name,
-                            path_nfd=imagefile.path_nfd,
+                            path_nf=imagefile.path_nf,
                             st_mtime=imagefile.stat_result.st_mtime,
                         )
                         data.append(asdict(imageData))
@@ -745,7 +745,7 @@ class ImageViewer(QMainWindow):
 
         # Load the first image if no image is currently displayed
         if existing_image_count == 0 and imageDataList:
-            self.loadImageFromFile(imageDataList[0].path_nfd)
+            self.loadImageFromFile(imageDataList[0].path_nf)
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
         self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
@@ -799,7 +799,7 @@ class ImageViewer(QMainWindow):
             index = self.verticalOrderSet.index(self.currentPath)
             index = (index + 1) % len(self.verticalOrderSet)
             currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nfd)
+            self.loadImageFromFile(currentFile.path_nf)
 
     def verticalPreviousImage(self):
         """
@@ -809,7 +809,7 @@ class ImageViewer(QMainWindow):
             index = self.verticalOrderSet.index(self.currentPath)
             index = (index - 1) % len(self.verticalOrderSet)
             currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nfd)
+            self.loadImageFromFile(currentFile.path_nf)
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -820,7 +820,7 @@ class ImageViewer(QMainWindow):
             index = self.horizontalOrderSet.index(self.currentPath)
             index = (index + 1) % len(self.horizontalOrderSet)
             currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nfd)
+            self.loadImageFromFile(currentFile.path_nf)
 
     def horizontalPreviousImage(self):
         """
@@ -830,7 +830,7 @@ class ImageViewer(QMainWindow):
             index = self.horizontalOrderSet.index(self.currentPath)
             index = (index - 1) % len(self.horizontalOrderSet)
             currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nfd)
+            self.loadImageFromFile(currentFile.path_nf)
 
     def keyPressEvent(self, event):
         """
