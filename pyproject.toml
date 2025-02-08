@@ -1,0 +1,15 @@
+[project]
+name = "yee3"
+version = "0.1.0"
+description = "The Minimalist Image Viewer"
+authors = [
+    {name = "tanaga9", email = "tanaga9@users.noreply.github.com"},
+]
+dependencies = ["PyQt5>=5.15.11"]
+requires-python = "==3.12.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false

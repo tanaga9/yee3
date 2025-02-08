@@ -3,6 +3,7 @@ Yee 3
 ======
 
 The Minimalist Image Viewer.
+Sleek and fast.
 
 [Xee 3](https://theunarchiver.com/xee) does not support Apple Silicon and could not open some image formats correctly, so I tried creating an Image Viewer using ChatGPT (o3-mini-high).
 
