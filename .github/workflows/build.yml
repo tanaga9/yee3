@@ -23,6 +23,10 @@ jobs:
           pip install pdm
           pdm install --dev
 
+      - name: Create iconset
+        run: |
+          iconutil -c icns src/yee3/resources/yee3.iconset
+
       - name: Build app with Briefcase
         run: |
           pdm run briefcase build macOS

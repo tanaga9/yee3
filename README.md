@@ -15,6 +15,7 @@ How to build an app on your local Mac
 
 - `pip3 install pdm`
 - `pdm install --dev`
+- `iconutil -c icns src/yee3/resources/yee3.iconset`
 - `pdm run briefcase build macOS`
 - `patch -u < Info.plist.patch`
 
