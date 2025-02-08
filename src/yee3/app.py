@@ -1212,13 +1212,12 @@ class ImageViewer(QMainWindow):
             event.accept()
 
 
-def main():
-    app = QApplication(sys.argv)
+def initialize_image_viewer(imagePath=None):
     viewer = ImageViewer()
 
     # If an image file is provided as a command-line argument, load its folder and display that image.
-    if len(sys.argv) > 1:
-        imagePath = unicodedata.normalize("NFD", sys.argv[1])
+    if imagePath is not None:
+        imagePath = unicodedata.normalize("NFD", imagePath)
         if os.path.isfile(imagePath):
             folder = os.path.dirname(imagePath)
             viewer.loadImagesFromFolder(folder, imagePath)
@@ -1226,6 +1225,13 @@ def main():
             viewer.loadImagesFromFolder(imagePath)
 
     viewer.show()
+    return viewer
+
+
+def main():
+    app = QApplication(sys.argv)
+    imagePath = sys.argv[1] if len(sys.argv) > 1 else None
+    viewer = initialize_image_viewer(imagePath)
     sys.exit(app.exec_())
 
 

@@ -5,7 +5,7 @@ description = "The Minimalist Image Viewer"
 authors = [
     {name = "tanaga9", email = "tanaga9@users.noreply.github.com"},
 ]
-dependencies = ["PyQt5>=5.15.11"]
+dependencies = ["PyQt5>=5.15.11", "pyobjc-framework-Cocoa>=11.0"]
 requires-python = "==3.12.*"
 readme = "README.md"
 license = {text = "MIT"}
