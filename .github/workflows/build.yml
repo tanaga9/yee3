@@ -63,7 +63,7 @@ jobs:
 
       - name: Compress built app into ZIP
         run: |
-          zip -r macOS-app.zip dist/
+          zip -r macOS-app.zip macOS-app/
 
       - name: Create GitHub Release
         id: create_release
