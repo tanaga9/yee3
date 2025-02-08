@@ -10,8 +10,16 @@ Sleek and fast.
 It is intended for macOS. If you want to make it into an application, wrapping it with Automator would be a good option.
 
 
-Used via Automator
---------
+How to build an app on your local Mac
+------------------------------------
+
+- `pip3 install pdm`
+- `pdm install --dev`
+- `pdm run briefcase build macOS`
+
+
+Used via Automator (without build)
+----------------------------------
 
 - `Run Shell Script`
 - Shell: `/bin/zsh`
