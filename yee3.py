@@ -438,8 +438,6 @@ class ImageViewer(QMainWindow):
         self.imageLabel.setBackgroundRole(QPalette.Base)
         self.imageLabel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.imageLabel.setScaledContents(True)
-        # Install an event filter to capture double-click events for copying.
-        self.imageLabel.installEventFilter(self)
 
         # Set up a scroll area with a black background.
         self.scrollArea = QScrollArea()
@@ -449,6 +447,10 @@ class ImageViewer(QMainWindow):
         # Prevent the scroll area from taking focus so that key events are handled by the main window.
         self.scrollArea.setFocusPolicy(Qt.NoFocus)
         self.setCentralWidget(self.scrollArea)
+
+        # Install an event filter to capture double-click events.
+        self.imageLabel.installEventFilter(self)
+        self.scrollArea.installEventFilter(self)
 
         # Create and always show the status bar.
         self.setStatusBar(QStatusBar(self))
@@ -1146,19 +1148,33 @@ class ImageViewer(QMainWindow):
 
     def eventFilter(self, obj, event):
         """
-        Event filter to capture double-click events on the image label.
-        On a double-click, attempt to copy the current file using the currently selected
-        copy destination from the dock list (or default to Cmd+1 if none is selected).
-
-        :param obj: The object for which the event is being filtered.
-        :param event: The event.
-        :return: True if the event is handled, otherwise call the base implementation.
+        Event filter to capture double-click events on the image label and scroll area.
+        On a double-click, resize the window:
+          - Set height to the maximum available screen height.
+          - Adjust width to maintain the aspect ratio of the currently displayed image.
         """
-        if obj == self.imageLabel and event.type() == QEvent.MouseButtonDblClick:
-            row = self.copyList.currentRow()
-            index = row + 1 if row >= 0 else 1
-            self.copyToDestination(index)
+        if (obj == self.imageLabel or obj == self.scrollArea) and event.type() == QEvent.MouseButtonDblClick:
+            screen_geometry = QApplication.desktop().availableGeometry(self)
+            screen_height = screen_geometry.height()
+            window_center_x = self.geometry().center().x()
+
+            status_bar_height = self.statusBar().height()
+            adjusted_height = screen_height - status_bar_height
+
+            if self.originalPixmap:
+                image_size = self.originalPixmap.size()
+                aspect_ratio = image_size.width() / image_size.height()
+                new_width = int(adjusted_height * aspect_ratio)
+            else:
+                new_width = self.width()
+
+            new_x = window_center_x - (new_width // 2)
+            new_y = self.geometry().y()
+            self.move(new_x, new_y)
+            self.resize(new_width, adjusted_height)
+
             return True
+
         return super().eventFilter(obj, event)
 
     def showEvent(self, event):
