@@ -31,6 +31,7 @@ long_description = """Sleek and fast.
 sources = [
     "src/yee3",
 ]
+icon = "src/yee3/resources/yee3"
 
 [tool.briefcase.app.yee3.macOS]
 universal_build = true
