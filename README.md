@@ -20,7 +20,7 @@ Used via Automator
 ```
 set -euo pipefail
 # pip3 install PyQt5
-python3 ${YEE3_SCRIPT_PATH}/yee3.py "$@"
+python3 ${YEE3_SCRIPT_PATH}/src/yee3/app.py "$@"
 ```
 
 Please either modify or configure the YEE3_SCRIPT_PATH part.

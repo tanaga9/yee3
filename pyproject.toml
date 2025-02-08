@@ -13,3 +13,27 @@ license = {text = "MIT"}
 
 [tool.pdm]
 distribution = false
+
+[dependency-groups]
+dev = [
+    "briefcase>=0.3.22",
+]
+
+[tool.briefcase]
+project_name = "Yee 3"
+bundle = "com.example"
+
+[tool.briefcase.app.yee3]
+formal_name = "Yee 3"
+description = "The Minimalist Image Viewer"
+long_description = """Sleek and fast.
+"""
+sources = [
+    "src/yee3",
+]
+
+[tool.briefcase.app.yee3.macOS]
+universal_build = true
+requires = [
+    "std-nslog~=1.0.3",
+]

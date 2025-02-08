@@ -1153,7 +1153,9 @@ class ImageViewer(QMainWindow):
           - Set height to the maximum available screen height.
           - Adjust width to maintain the aspect ratio of the currently displayed image.
         """
-        if (obj == self.imageLabel or obj == self.scrollArea) and event.type() == QEvent.MouseButtonDblClick:
+        if (
+            obj == self.imageLabel or obj == self.scrollArea
+        ) and event.type() == QEvent.MouseButtonDblClick:
             screen_geometry = QApplication.desktop().availableGeometry(self)
             screen_height = screen_geometry.height()
             window_center_x = self.geometry().center().x()
@@ -1210,7 +1212,7 @@ class ImageViewer(QMainWindow):
             event.accept()
 
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     viewer = ImageViewer()
 
@@ -1225,3 +1227,7 @@ if __name__ == "__main__":
 
     viewer.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
