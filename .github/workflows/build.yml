@@ -32,10 +32,8 @@ jobs:
           patch -u < Info.plist.patch
 
       - name: Package app
-        env:
-          BRIEFCASE_SIGNING_IDENTITY: "Ad-hoc identity"
         run: |
-          pdm run briefcase package macOS
+          printf "1\n" | pdm run briefcase package macOS
 
       - name: Upload built app
         uses: actions/upload-artifact@v4
