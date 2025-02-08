@@ -168,7 +168,7 @@ class ImageFile:
 @dataclass
 class ImageData:
     name: str
-    path_nfd: int
+    path_nfd: str
     st_mtime: float
 
 
@@ -761,13 +761,13 @@ class ImageViewer(QMainWindow):
         :param filePath: The full path to the image file.
         """
         self.currentPath = unicodedata.normalize("NFD", filePath)
+        self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
         else:
             self.originalPixmap = image
             self.adjustImageScale()
-            self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
 
     def adjustImageScale(self):
         """
