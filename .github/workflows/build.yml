@@ -1,0 +1,42 @@
+name: Build macOS App
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install pdm
+          pdm install --dev
+
+      - name: Build app with Briefcase
+        run: |
+          pdm run briefcase build macOS
+
+      - name: Patch Info.plist
+        run: |
+          patch -u < Info.plist.patch
+
+      - name: Package app
+        run: |
+          pdm run briefcase package macOS
+
+      - name: Upload built app
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-app
+          path: dist/macOS/
