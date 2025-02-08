@@ -32,6 +32,8 @@ jobs:
           patch -u < Info.plist.patch
 
       - name: Package app
+        env:
+          BRIEFCASE_SIGNING_IDENTITY: "Ad-hoc identity"
         run: |
           pdm run briefcase package macOS
 
