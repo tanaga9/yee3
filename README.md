@@ -16,6 +16,7 @@ How to build an app on your local Mac
 - `pip3 install pdm`
 - `pdm install --dev`
 - `pdm run briefcase build macOS`
+- `patch -u < Info.plist.patch`
 
 
 Used via Automator (without build)
