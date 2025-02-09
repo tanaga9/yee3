@@ -1,36 +1,52 @@
+import os
 import sys
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 from Foundation import NSObject
 from Cocoa import NSApp
 
 from yee3.app import initialize_image_viewer
 
-windows = []
-
 
 class MacOSFileHandler(NSObject):
-    def application_openFiles_(self, app, imagePaths):
-        global windows
+    windows = []
 
-        imagePath = imagePaths[0]
-        windows.append(initialize_image_viewer(imagePath))
+    def application_openFiles_(self, app, imagePaths):
+        try:
+            # QMessageBox.information(None, "", "event: " + str(self.windows))
+            imagePath = imagePaths[0]
+            if len(self.windows) == 1 and self.windows[0].currentPath is None:
+                window = self.windows[0]
+                folder = os.path.dirname(imagePath)
+                window.loadImagesFromFolder(folder, imagePath)
+            else:
+                window = initialize_image_viewer(imagePath)
+                self.windows.append(window)
+        except Exception as e:
+            QMessageBox.critical(None, "", str(e))
 
 
 def main():
-    global windows
-
     app = QApplication(sys.argv)
-
     delegate = MacOSFileHandler.alloc().init()
-    NSApp.setDelegate_(delegate)
 
     imagePath = sys.argv[1] if len(sys.argv) > 1 else None
-
     if imagePath:
-        windows.append(initialize_image_viewer(imagePath))
+        window = initialize_image_viewer(imagePath)
     else:
-        # windows.append(initialize_image_viewer())
-        pass
+        window = initialize_image_viewer()
+
+    delegate.windows.append(window)
+    # QMessageBox.information(
+    #     None,
+    #     "",
+    #     "new: "
+    #     + str(delegate.windows)
+    #     + " "
+    #     + str(window.currentPath)
+    #     + " "
+    #     + str(sys.argv),
+    # )
+    NSApp.setDelegate_(delegate)
 
     sys.exit(app.exec_())
 

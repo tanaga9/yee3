@@ -5,19 +5,21 @@ Yee 3
 The Minimalist Image Viewer.
 Sleek and fast.
 
-[Xee 3](https://theunarchiver.com/xee) does not support Apple Silicon and could not open some image formats correctly, so I tried creating an Image Viewer using ChatGPT (o3-mini-high).
+[Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I built this with ChatGPT (o3-mini-high).
 
-It is intended for macOS. If you want to make it into an application, wrapping it with Automator would be a good option.
+Designed for macOS. Use Automator for quick app wrapping.
 
 
 How to build an app on your local Mac
 ------------------------------------
 
-- `pip3 install pdm`
-- `pdm install --dev`
-- `iconutil -c icns src/yee3/resources/yee3.iconset`
-- `pdm run briefcase build macOS`
-- `patch -u < Info.plist.patch`
+- **Setup the environment**
+    - `pip3 install pdm`
+    - `pdm install --dev`  *(Run again if `pyproject.toml` or `pdm.lock` changes.)*
+- **Build**
+    - `iconutil -c icns src/yee3/resources/yee3.iconset`
+    - `pdm run briefcase build macOS`
+    - `patch -u < Info.plist.patch`
 
 
 Used via Automator (without build)
