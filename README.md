@@ -9,7 +9,7 @@ Sleek and fast.
 
 [Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I built this with ChatGPT (o3-mini-high).
 
-Designed for macOS. Use Automator for quick app wrapping.
+Designed for macOS.
 
 Concept and design
 ----------------
@@ -30,6 +30,8 @@ How to build an app on your local Mac
 
 Used via Automator (without build)
 ----------------------------------
+
+Use Automator for quick app wrapping.
 
 - `Run Shell Script`
 - Shell: `/bin/zsh`
