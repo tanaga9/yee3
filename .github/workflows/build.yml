@@ -61,6 +61,11 @@ jobs:
           name: macOS-app
           path: .
 
+      - name: List directory contents
+        run: |
+          ls -la
+          find . -maxdepth 2
+
       - name: Compress built app into ZIP
         run: |
           zip -r macOS-app.zip macOS-app/
