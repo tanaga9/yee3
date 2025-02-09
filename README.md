@@ -9,6 +9,10 @@ Sleek and fast.
 
 Designed for macOS. Use Automator for quick app wrapping.
 
+Concept and design
+----------------
+
+![concept_and_design](./docs/concept_and_design.png "Concept and design")
 
 How to build an app on your local Mac
 ------------------------------------
