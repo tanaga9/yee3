@@ -5,6 +5,8 @@ Yee 3
 The Minimalist Image Viewer.
 Sleek and fast.
 
+![Yee 3](src/yee3/resources/yee3.iconset/icon_256x256.png)
+
 [Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I built this with ChatGPT (o3-mini-high).
 
 Designed for macOS. Use Automator for quick app wrapping.
@@ -12,7 +14,7 @@ Designed for macOS. Use Automator for quick app wrapping.
 Concept and design
 ----------------
 
-![concept_and_design](./docs/concept_and_design.png "Concept and design")
+![Concept and design](docs/concept_and_design.png)
 
 How to build an app on your local Mac
 ------------------------------------
