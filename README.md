@@ -11,6 +11,8 @@ Sleek and fast.
 
 Designed for macOS.
 
+🔔 It’s better **not** to proceed with `Open With` → `Change All…` just yet.
+
 Concept and design
 ----------------
 
