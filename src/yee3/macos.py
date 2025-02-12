@@ -1,6 +1,6 @@
 import os
 import sys
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 from Foundation import NSObject
 from Cocoa import NSApp
 
@@ -48,7 +48,7 @@ def main():
     # )
     NSApp.setDelegate_(delegate)
 
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
