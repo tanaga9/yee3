@@ -144,6 +144,7 @@ jobs:
             src/yee3/resources/yee3.iconset/icon_256x256.png \
             -define icon:auto-resize=16,32,48,256 -compress zip \
             src/yee3/resources/yee3.ico
+        shell: bash
 
       - name: Build app with Briefcase for Windows
         run: |
