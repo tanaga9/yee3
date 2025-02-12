@@ -64,6 +64,22 @@ jobs:
           name: macOS-app
           path: .
 
+      - name: Extract version from Git tag
+        run: echo "VERSION_TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Extract version from pyproject.toml
+        run: |
+          VERSION_TOML=$(grep '^version =' pyproject.toml | cut -d '"' -f2)
+          echo "VERSION_TOML=$VERSION_TOML" >> $GITHUB_ENV
+
+      - name: Compare versions and fail if mismatched
+        run: |
+          if [ "$VERSION_TAG" != "$VERSION_TOML" ]; then
+            echo "❌ Version mismatch: Git tag ($VERSION_TAG) != pyproject.toml ($VERSION_TOML)"
+            exit 1
+          fi
+          echo "✅ Version match: $VERSION_TAG"
+
       - name: List directory contents
         run: |
           ls -la
@@ -71,7 +87,7 @@ jobs:
 
       - name: Compress built app into ZIP
         run: |
-          zip Yee_3-0.1.0.zip "Yee 3-0.1.0.dmg"
+          zip "Yee_3-${VERSION_TAG}.zip" "Yee 3-${VERSION_TAG}.dmg"
 
       - name: Create GitHub Release
         id: create_release
@@ -91,6 +107,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./Yee_3-0.1.0.zip
-          asset_name: Yee_3-0.1.0.zip
+          asset_path: ./Yee_3-${{ env.VERSION_TAG }}.zip
+          asset_name: Yee_3-${{ env.VERSION_TAG }}.zip
           asset_content_type: application/zip
