@@ -10,25 +10,24 @@ import unicodedata
 from datetime import datetime
 from typing import Dict, List
 from dataclasses import dataclass, asdict
-from PyQt5.QtWidgets import (
+
+from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
     QLabel,
     QScrollArea,
     QFileDialog,
-    QAction,
     QToolBar,
     QSizePolicy,
     QMenu,
     QDockWidget,
     QListWidget,
-    QShortcut,
     QStatusBar,
     QToolButton,
     QWidget,
     QWidgetAction,
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QPixmap,
     QPalette,
     QImageReader,
@@ -36,8 +35,10 @@ from PyQt5.QtGui import (
     QPainter,
     QColor,
     QBrush,
+    QAction,
+    QShortcut,
 )
-from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint, QThread, pyqtSignal
+from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QThread, Signal
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -339,8 +340,8 @@ class HorizontalGauge(QWidget):
 
 
 class ImageLoaderWorker(QThread):
-    imageLoaded = pyqtSignal(str)
-    finishedLoading = pyqtSignal()
+    imageLoaded = Signal(str)
+    finishedLoading = Signal()
 
     def __init__(self, folder, filePath=None, parent=None):
         super().__init__(parent)
@@ -1156,7 +1157,7 @@ class ImageViewer(QMainWindow):
         if (
             obj == self.imageLabel or obj == self.scrollArea
         ) and event.type() == QEvent.MouseButtonDblClick:
-            screen_geometry = QApplication.desktop().availableGeometry(self)
+            screen_geometry = QApplication.primaryScreen().availableGeometry()
             screen_height = screen_geometry.height()
             window_center_x = self.geometry().center().x()
 
@@ -1232,7 +1233,7 @@ def main():
     app = QApplication(sys.argv)
     imagePath = sys.argv[1] if len(sys.argv) > 1 else None
     viewer = initialize_image_viewer(imagePath)
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
