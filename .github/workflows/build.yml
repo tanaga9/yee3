@@ -141,10 +141,8 @@ jobs:
       - name: Create ICO file from PNG images
         run: |
           magick convert \
-            src/yee3/resources/yee3.iconset/icon_16x16.png \
-            src/yee3/resources/yee3.iconset/icon_32x32.png \
-            src/yee3/resources/yee3.iconset/icon_48x48.png \
             src/yee3/resources/yee3.iconset/icon_256x256.png \
+            -define icon:auto-resize=16,32,48,256 -compress zip \
             src/yee3/resources/yee3.ico
 
       - name: Build app with Briefcase for Windows
