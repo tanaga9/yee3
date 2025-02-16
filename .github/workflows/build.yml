@@ -1,4 +1,4 @@
-name: Build macOS App and Release
+name: Build macOS and Windows Apps and Release
 
 on:
   push:
@@ -66,11 +66,13 @@ jobs:
 
       - name: Extract version from Git tag
         run: echo "VERSION_TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+        shell: bash
 
       - name: Extract version from pyproject.toml
         run: |
           VERSION_TOML=$(grep '^version =' pyproject.toml | cut -d '"' -f2)
           echo "VERSION_TOML=$VERSION_TOML" >> $GITHUB_ENV
+        shell: bash
 
       - name: Compare versions and fail if mismatched
         run: |
@@ -79,15 +81,18 @@ jobs:
             exit 1
           fi
           echo "✅ Version match: $VERSION_TAG"
+        shell: bash
 
       - name: List directory contents
         run: |
           ls -la
           find . -maxdepth 2
+        shell: bash
 
       - name: Compress built app into ZIP
         run: |
-          zip "Yee_3-${VERSION_TAG}.zip" "Yee 3-${VERSION_TAG}.dmg"
+          zip "Yee_3-${VERSION_TAG}_macOS.zip" "Yee 3-${VERSION_TAG}.dmg"
+        shell: bash
 
       - name: Create GitHub Release
         id: create_release
@@ -97,7 +102,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           release_name: Release ${{ github.ref_name }}
-          body: Automated release for version ${{ github.ref_name }}.
+          body: Automated macOS release for version ${{ github.ref_name }}.
           draft: false
           prerelease: false
 
@@ -107,6 +112,116 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./Yee_3-${{ env.VERSION_TAG }}.zip
-          asset_name: Yee_3-${{ env.VERSION_TAG }}.zip
+          asset_path: ./Yee_3-${{ env.VERSION_TAG }}_macOS.zip
+          asset_name: Yee_3-${{ env.VERSION_TAG }}_macOS.zip
+          asset_content_type: application/zip
+
+  build_windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install pdm
+          pdm install --dev
+
+      - name: Install ImageMagick via Chocolatey
+        run: choco install imagemagick -y
+
+      - name: Verify ImageMagick installation
+        run: magick -version
+
+      - name: Create ICO file from PNG images
+        run: |
+          magick convert \
+            src/yee3/resources/yee3.iconset/icon_256x256.png \
+            -define icon:auto-resize=16,32,48,256 -compress zip \
+            src/yee3/resources/yee3.ico
+        shell: bash
+
+      - name: Build app with Briefcase for Windows
+        run: |
+          pdm run briefcase build windows
+
+      - name: Package app for Windows
+        run: |
+          pdm run briefcase package windows
+
+      - name: Upload built app artifact (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-app
+          path: dist/
+
+  release_windows:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build_windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built app artifact (Windows)
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-app
+          path: .
+
+      - name: Extract version from Git tag
+        run: echo "VERSION_TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Extract version from pyproject.toml
+        run: |
+          VERSION_TOML=$(grep '^version =' pyproject.toml | cut -d '"' -f2)
+          echo "VERSION_TOML=$VERSION_TOML" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Compare versions and fail if mismatched
+        run: |
+          if [ "$VERSION_TAG" != "$VERSION_TOML" ]; then
+            echo "❌ Version mismatch: Git tag ($VERSION_TAG) != pyproject.toml ($VERSION_TOML)"
+            exit 1
+          fi
+          echo "✅ Version match: $VERSION_TAG"
+        shell: bash
+
+      - name: List directory contents
+        run: |
+          dir
+          Get-ChildItem -Path . -Recurse
+        shell: powershell
+
+      - name: Compress built app into ZIP
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\Yee 3-$env:VERSION_TAG.msi" -DestinationPath "Yee_3-$env:VERSION_TAG_windows.zip"
+
+      - name: Create GitHub Release (Windows)
+        id: create_release_windows
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: Automated Windows release for version ${{ github.ref_name }}.
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset (Windows)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release_windows.outputs.upload_url }}
+          asset_path: ./Yee_3-${{ env.VERSION_TAG }}_windows.zip
+          asset_name: Yee_3-${{ env.VERSION_TAG }}_windows.zip
           asset_content_type: application/zip
