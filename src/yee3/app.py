@@ -792,9 +792,9 @@ class ImageViewer(QMainWindow):
             self.imageLabel.resize(scaledPixmap.size())
 
     # --- Vertical Navigation (sorted by last modified time) ---
-    def verticalNextImage(self):
+    def verticalPreviousImage(self):
         """
-        Show the next image in vertical order (sorted by last modified time).
+        Show the previous image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
             index = self.verticalOrderSet.index(self.currentPath)
@@ -802,9 +802,9 @@ class ImageViewer(QMainWindow):
             currentFile = self.verticalOrderSet[index]
             self.loadImageFromFile(currentFile.path_nf)
 
-    def verticalPreviousImage(self):
+    def verticalNextImage(self):
         """
-        Show the previous image in vertical order (sorted by last modified time).
+        Show the next image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
             index = self.verticalOrderSet.index(self.currentPath)
