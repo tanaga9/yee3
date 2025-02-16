@@ -10,6 +10,7 @@ import unicodedata
 from datetime import datetime
 from typing import Dict, List
 from dataclasses import dataclass, asdict
+from enum import IntEnum
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +27,10 @@ from PySide6.QtWidgets import (
     QToolButton,
     QWidget,
     QWidgetAction,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
 )
 from PySide6.QtGui import (
     QPixmap,
@@ -337,6 +342,54 @@ class HorizontalGauge(QWidget):
         painter.setBrush(QBrush(color))
         painter.setPen(Qt.NoPen)
         painter.drawRect(int(x_pos), 0, int(gauge_length), int(self.bar_height))
+
+
+class ReplaceDialogResult(IntEnum):
+    CANCEL = 0
+    REPLACE = 1
+    RENAME = 2
+
+
+class ReplaceDialog(QDialog):
+    def __init__(self, filePath, pixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("File Already Exists")
+        self.resize(500, 400)  # Adjust size as needed
+
+        # Create layout
+        main_layout = QVBoxLayout(self)
+
+        # Message label
+        message = QLabel(f"{filePath} already exists.")
+        message.setFixedWidth(400)
+        message.setWordWrap(True)
+        message.setMaximumHeight(400)
+        message.setAlignment(Qt.AlignCenter | Qt.AlignTop)
+        main_layout.addWidget(message)
+
+        # Image preview label
+        if pixmap:
+            image_label = QLabel()
+            image_label.setPixmap(pixmap)
+            image_label.setAlignment(Qt.AlignCenter)
+            main_layout.addWidget(image_label)
+
+        # Create button layout
+        button_layout = QHBoxLayout()
+        self.cancelButton = QPushButton("Cancel")
+        self.replaceButton = QPushButton("Replace")
+        self.renameButton = QPushButton("Rename")
+        button_layout.addWidget(self.cancelButton)
+        button_layout.addWidget(self.replaceButton)
+        button_layout.addWidget(self.renameButton)
+        main_layout.addLayout(button_layout)
+
+        # Connect button signals (returns 1, 2, or 0 respectively)
+        self.replaceButton.clicked.connect(
+            lambda: self.done(ReplaceDialogResult.REPLACE)
+        )
+        self.renameButton.clicked.connect(lambda: self.done(ReplaceDialogResult.RENAME))
+        self.cancelButton.clicked.connect(lambda: self.done(ReplaceDialogResult.CANCEL))
 
 
 class ImageLoaderWorker(QThread):
@@ -1130,15 +1183,54 @@ class ImageViewer(QMainWindow):
             dest = folder
             self.copyDestinations[str(index)] = dest
             self.updateCopyList()
+
         if self.currentPath:
-            print(f"Copying '{self.currentPath}' to destination '{dest}'")
-            try:
-                copy_with_unique_name(self.currentPath, dest)
-                self.statusBar().showMessage(f"Copied file to {dest}", 3000)
-            except Exception as e:
-                self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+            fileName = os.path.basename(self.currentPath)
+            targetPath = os.path.join(dest, fileName)
+            if os.path.exists(targetPath):
+                # If an existing file is an image, generate a thumbnail
+                pixmap = QPixmap(targetPath)
+                if not pixmap.isNull():
+                    # For example, scale to 400×400
+                    scaled_pixmap = pixmap.scaled(
+                        400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                else:
+                    scaled_pixmap = None
+
+                # Display a custom dialog
+                dialog = ReplaceDialog(targetPath, scaled_pixmap, self)
+                result = dialog.exec()
+
+                if result == ReplaceDialogResult.REPLACE:
+                    # Replace copy
+                    try:
+                        shutil.copy2(self.currentPath, targetPath)
+                        self.statusBar().showMessage(f"Replaced file at {dest}", 3000)
+                    except Exception as e:
+                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                elif result == ReplaceDialogResult.RENAME:
+                    # Copy with a new name
+                    try:
+                        copy_with_unique_name(self.currentPath, dest)
+                        self.statusBar().showMessage(
+                            f"Copied to {dest} with a new name", 3000
+                        )
+                    except Exception as e:
+                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                elif result == ReplaceDialogResult.CANCEL:
+                    # Cancel
+                    self.statusBar().showMessage("Copy canceled", 3000)
+                    return
+            else:
+                # If there is no file with the same name, perform a normal copy
+                try:
+                    shutil.copy2(self.currentPath, targetPath)
+                    self.statusBar().showMessage(f"Copied to {dest}", 3000)
+                except Exception as e:
+                    self.statusBar().showMessage(f"Copy failed: {e}", 3000)
         else:
-            print("No current file set for copying.")
+            print("No current file available.")
 
     def onCopyListDoubleClicked(self, item):
         """
