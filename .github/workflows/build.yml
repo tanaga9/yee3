@@ -36,9 +36,9 @@ jobs:
         run: |
           pdm run briefcase build macOS
 
-      - name: Patch Info.plist
+      - name: Replace Info.plist
         run: |
-          patch -u < Info.plist.patch
+          cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.
 
       - name: Package app
         run: |
