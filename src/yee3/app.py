@@ -502,7 +502,9 @@ class ImageViewer(QMainWindow):
         self.copyShortcuts = {}
         for i in range(1, 10):
             # On macOS, "Meta" represents the Command key.
-            sc = QShortcut(QKeySequence(f"Meta+{i}"), self)
+            # sc = QShortcut(QKeySequence(f"Meta+{i}"), self)
+            # I’m not sure why, but it works as intended when I change Meta to Ctrl.
+            sc = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             sc.activated.connect(lambda i=i: self.copyToDestination(i))
             self.copyShortcuts[i] = sc
 
