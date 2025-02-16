@@ -5,5 +5,6 @@ osascript -e 'tell application "Finder" to delete POSIX file "'"$(realpath ./bui
 iconutil -c icns src/yee3/resources/yee3.iconset
 # pdm run briefcase update macOS
 pdm run briefcase build macOS
+cp build/yee3/macos/app/Yee\ 3.app/Contents/Info.plist ./Info_org.plist
 cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.
 # printf "1\n" | pdm run briefcase package macOS
