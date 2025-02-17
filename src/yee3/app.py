@@ -628,8 +628,7 @@ class ImageViewer(QMainWindow):
             self, "Open File", os.getcwd(), fileFilter
         )
         if filePath:
-            folder = os.path.dirname(filePath)
-            self.loadImagesFromFolder(folder, filePath)
+            self.loadImagesFromFolder(filePath)
 
     def revealInFinder(self):
         """
@@ -764,17 +763,26 @@ class ImageViewer(QMainWindow):
         if folder:
             self.loadImagesFromFolder(folder)
 
-    def loadImagesFromFolder(self, folder, filePath=None):
+    def loadImagesFromFolder(self, path):
         """
         Load all image files from the specified folder, create two sort orders,
         and display the first image.
 
-        :param folder: The folder from which to load images.
+        :param path: The path to the folder or file to load images from.
         """
 
         if self.lazyLoadingInProgress:
             return
         self.lazyLoadingInProgress = True
+
+        if os.path.isfile(path):
+            filePath = path
+            folderPath = os.path.dirname(path)
+        elif os.path.isdir(path):
+            filePath = None
+            folderPath = path
+        else:
+            raise ValueError("The specified path is neither a file nor a directory.")
 
         # Clear all image sets
         self.fnameOrderSet.clear()
@@ -783,7 +791,7 @@ class ImageViewer(QMainWindow):
 
         self.statusBar().showMessage("loading...", 2000)
 
-        self.imageLoader = ImageLoaderWorker(folder, filePath)
+        self.imageLoader = ImageLoaderWorker(folderPath, filePath)
         self.imageLoader.imageLoaded.connect(self.handleNewImage)
         self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
         self.imageLoader.start()
@@ -1086,8 +1094,7 @@ class ImageViewer(QMainWindow):
                     str(fmt, "utf-8").lower() for fmt in supportedFormats
                 ]
                 if any(filePath.lower().endswith(ext) for ext in imageExtensions):
-                    folder = os.path.dirname(filePath)
-                    self.loadImagesFromFolder(folder, filePath)
+                    self.loadImagesFromFolder(filePath)
                     break
             elif os.path.isdir(filePath):
                 self.loadImagesFromFolder(filePath)
@@ -1313,11 +1320,7 @@ def initialize_image_viewer(imagePath=None):
     # If an image file is provided as a command-line argument, load its folder and display that image.
     if imagePath is not None:
         imagePath = unicodedata.normalize("NFD", imagePath)
-        if os.path.isfile(imagePath):
-            folder = os.path.dirname(imagePath)
-            viewer.loadImagesFromFolder(folder, imagePath)
-        elif os.path.isdir(imagePath):
-            viewer.loadImagesFromFolder(imagePath)
+        viewer.loadImagesFromFolder(imagePath)
 
     viewer.show()
     return viewer
