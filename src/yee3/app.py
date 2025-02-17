@@ -43,7 +43,15 @@ from PySide6.QtGui import (
     QAction,
     QShortcut,
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QThread, Signal
+from PySide6.QtCore import (
+    Qt,
+    QTimer,
+    QEvent,
+    QPoint,
+    QThread,
+    Signal,
+    QFileSystemWatcher,
+)
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -585,6 +593,8 @@ class ImageViewer(QMainWindow):
         self.decayTimer.start(50)  # Called every 50ms
 
         self.lazyLoadingInProgress = False
+        self.watcher = QFileSystemWatcher()
+        self.watcher.directoryChanged.connect(self.on_directory_changed)
 
     def createMenus(self):
         """
@@ -785,7 +795,6 @@ class ImageViewer(QMainWindow):
 
         if self.lazyLoadingInProgress:
             return
-        self.lazyLoadingInProgress = True
 
         if os.path.isfile(path):
             filePath = path
@@ -794,7 +803,11 @@ class ImageViewer(QMainWindow):
             filePath = None
             folderPath = path
         else:
-            raise ValueError("The specified path is neither a file nor a directory.")
+            return
+            # raise ValueError("The specified path is neither a file nor a directory.")
+
+        self.lazyLoadingInProgress = True
+        self.watcher.removePaths(self.watcher.directories())
 
         # Clear all image sets
         self.fnameOrderSet.clear()
@@ -828,9 +841,15 @@ class ImageViewer(QMainWindow):
 
     def finishLoadingImages(self):
         """ """
-        self.lazyLoadingInProgress = False
         self.statusBar().showMessage("Complete", 3000)
         self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+
+        self.lazyLoadingInProgress = False
+        if self.currentPath:
+            self.watcher.addPath(os.path.dirname(self.currentPath))
+
+    def on_directory_changed(self, path):
+        self.reloadCurrentFolder()
 
     def loadImageFromFile(self, filePath):
         """
