@@ -706,6 +706,10 @@ class ImageViewer(QMainWindow):
         """
         Create actions for opening a folder, zooming in, zooming out, and resetting the image size.
         """
+
+        self.refreshFolder = QAction("Reload CurrentFolder", self)
+        self.refreshFolder.triggered.connect(self.reloadCurrentFolder)
+
         self.copyToAct = QAction("Copy to ...", self)
         # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
         self.copyToAct.triggered.connect(self.showCopyDock)
@@ -743,6 +747,7 @@ class ImageViewer(QMainWindow):
         """
         toolbar = QToolBar("Toolbar")
         self.addToolBar(toolbar)
+        toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
         toolbar.addAction(self.zoomInAct)
         toolbar.addAction(self.zoomOutAct)
@@ -762,6 +767,13 @@ class ImageViewer(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder", os.getcwd())
         if folder:
             self.loadImagesFromFolder(folder)
+
+    def reloadCurrentFolder(self):
+        """
+        Reload the current folder and refresh the displayed images.
+        """
+        if self.currentPath:
+            return self.loadImagesFromFolder(self.currentPath)
 
     def loadImagesFromFolder(self, path):
         """
