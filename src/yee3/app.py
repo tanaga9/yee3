@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, List
 from dataclasses import dataclass, asdict
 from enum import IntEnum
+import uuid
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -184,6 +185,23 @@ class ImageData:
     name: str
     path_nf: str
     st_mtime: float
+    pseudo_random_hash: str
+
+    @staticmethod
+    def generate(pseudo_random_seed, imagefile: ImageFile):
+
+        pseudo_random_hash = str(
+            uuid.uuid5(
+                pseudo_random_seed,
+                f"{imagefile.name}:{imagefile.stat_result.st_ctime:.32f}",
+            )
+        )
+        return ImageData(
+            name=imagefile.name,
+            path_nf=imagefile.path_nf,
+            st_mtime=imagefile.stat_result.st_mtime,
+            pseudo_random_hash=pseudo_random_hash,
+        )
 
 
 class FastOrderedSet:
@@ -404,9 +422,10 @@ class ImageLoaderWorker(QThread):
     imageLoaded = Signal(str)
     finishedLoading = Signal()
 
-    def __init__(self, folder, filePath=None, parent=None):
+    def __init__(self, folder, pseudo_random_seed, filePath=None, parent=None):
         super().__init__(parent)
         self.folder = unicodedata.normalize("NFD", folder)
+        self.pseudo_random_seed = pseudo_random_seed
         self.filePath = os.path.abspath(filePath) if filePath is not None else None
 
     def run(self):
@@ -420,11 +439,7 @@ class ImageLoaderWorker(QThread):
             imagefile = ImageFile(path=self.filePath)
             if is_supported_image_format(imagefile.name):
                 if imagefile.stat():
-                    imageData = ImageData(
-                        name=imagefile.name,
-                        path_nf=imagefile.path_nf,
-                        st_mtime=imagefile.stat_result.st_mtime,
-                    )
+                    imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
         data = []
         last_emit_timestamp = datetime.now()
@@ -433,10 +448,8 @@ class ImageLoaderWorker(QThread):
                 imagefile = ImageFile(entry=entry)
                 if is_supported_image_format(imagefile.name):
                     if imagefile.stat():
-                        imageData = ImageData(
-                            name=imagefile.name,
-                            path_nf=imagefile.path_nf,
-                            st_mtime=imagefile.stat_result.st_mtime,
+                        imageData = ImageData.generate(
+                            self.pseudo_random_seed, imagefile
                         )
                         data.append(asdict(imageData))
                 now = datetime.now()
@@ -538,9 +551,11 @@ class ImageViewer(QMainWindow):
         # mtime order: images sorted by last modified time (newest first).
         self.mtimeOrderSet = FastOrderedSet(key_func=lambda p: -1 * p.st_mtime)
         # random order: images in random order (can be changed later to filename order).
-        self.randomOrderSet = FastOrderedSet()
+        self.randomOrderSet = FastOrderedSet(key_func=lambda p: p.pseudo_random_hash)
         # fname order: file name order
         self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.name)
+
+        self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
 
         self.verticalOrderSet = self.mtimeOrderSet
         self.horizontalOrderSet = self.randomOrderSet
@@ -785,7 +800,7 @@ class ImageViewer(QMainWindow):
         if self.currentPath:
             return self.loadImagesFromFolder(self.currentPath)
 
-    def loadImagesFromFolder(self, path):
+    def loadImagesFromFolder(self, path, refresh_random_seed=False):
         """
         Load all image files from the specified folder, create two sort orders,
         and display the first image.
@@ -816,7 +831,11 @@ class ImageViewer(QMainWindow):
 
         self.statusBar().showMessage("loading...", 2000)
 
-        self.imageLoader = ImageLoaderWorker(folderPath, filePath)
+        if refresh_random_seed:
+            self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
+        self.imageLoader = ImageLoaderWorker(
+            folderPath, self.pseudo_random_seed, filePath
+        )
         self.imageLoader.imageLoaded.connect(self.handleNewImage)
         self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
         self.imageLoader.start()
