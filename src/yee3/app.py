@@ -822,10 +822,14 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
 
-        # Clear all image sets
-        self.fnameOrderSet.clear()
-        self.mtimeOrderSet.clear()
-        self.randomOrderSet.clear()
+        if not (
+            self.currentPath
+            and os.path.samefile(os.path.dirname(self.currentPath), folderPath)
+        ):
+            # Clear all image sets
+            self.fnameOrderSet.clear()
+            self.mtimeOrderSet.clear()
+            self.randomOrderSet.clear()
 
         self.statusBar().showMessage("loading...", 2000)
 
