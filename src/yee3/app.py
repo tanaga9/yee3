@@ -134,6 +134,13 @@ class SortedList:
         """Return the insertion index for item."""
         return bisect.bisect_left(self._list, item)
 
+    def remove(self, item):
+        index = bisect.bisect_left(self._list, item)
+        if index < len(self._list) and self._list[index] == item:
+            self._list.pop(index)
+        else:
+            raise ValueError(f"{item} not found in SortedList")
+
     def clear(self):
         """Clear all elements in the list."""
         self._list.clear()
@@ -241,6 +248,27 @@ class FastOrderedSet:
         """
         for item in sequence:
             self.add(item)
+
+    def remove(self, item: ImageData):
+        """
+        Remove the specified element from the set.
+        Raises a KeyError if the element does not exist.
+        """
+        # Check if the element exists in index_map
+        if item.path_nf not in self.index_map:
+            # raise KeyError(f"'{item.path_nf}' not found in FastOrderedSet")
+            return  # idempotent
+
+        # Remove from index_map
+        del self.index_map[item.path_nf]
+
+        # Remove from the items list
+        self.items.remove(item)
+
+        # If a key function is set, remove the key from SortedList as well
+        if self.key_func is not None:
+            key = self.key_func(item)
+            self.keys.remove(key)
 
     def clear(self):
         """Remove all elements from the set. O(1)."""
@@ -855,7 +883,7 @@ class ImageViewer(QMainWindow):
 
         # Load the first image if no image is currently displayed
         if existing_image_count == 0 and imageDataList:
-            self.loadImageFromFile(imageDataList[0].path_nf)
+            self.loadImageFromFile(imageDataList[0])
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
         self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
@@ -872,12 +900,13 @@ class ImageViewer(QMainWindow):
     def on_directory_changed(self, path):
         self.reloadCurrentFolder()
 
-    def loadImageFromFile(self, filePath):
+    def loadImageFromFile(self, imageData: ImageData):
         """
         Load and display the image specified by filePath.
 
         :param filePath: The full path to the image file.
         """
+        filePath = imageData.path_nf
         self.currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         image = QPixmap(filePath)
@@ -915,7 +944,7 @@ class ImageViewer(QMainWindow):
             index = self.verticalOrderSet.index(self.currentPath)
             index = (index + 1) % len(self.verticalOrderSet)
             currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            self.loadImageFromFile(currentFile)
 
     def verticalNextImage(self):
         """
@@ -925,7 +954,7 @@ class ImageViewer(QMainWindow):
             index = self.verticalOrderSet.index(self.currentPath)
             index = (index - 1) % len(self.verticalOrderSet)
             currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            self.loadImageFromFile(currentFile)
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -936,7 +965,7 @@ class ImageViewer(QMainWindow):
             index = self.horizontalOrderSet.index(self.currentPath)
             index = (index + 1) % len(self.horizontalOrderSet)
             currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            self.loadImageFromFile(currentFile)
 
     def horizontalPreviousImage(self):
         """
@@ -946,7 +975,7 @@ class ImageViewer(QMainWindow):
             index = self.horizontalOrderSet.index(self.currentPath)
             index = (index - 1) % len(self.horizontalOrderSet)
             currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            self.loadImageFromFile(currentFile)
 
     def keyPressEvent(self, event):
         """
