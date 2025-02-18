@@ -637,6 +637,20 @@ class ImageViewer(QMainWindow):
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
 
+    def remove(self, imageData: ImageData):
+        if len(self.mtimeOrderSet) == 0:
+            return
+
+        self.mtimeOrderSet.remove(imageData)
+        self.randomOrderSet.remove(imageData)
+        self.fnameOrderSet.remove(imageData)
+
+        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+
+        if len(self.mtimeOrderSet) == 0:
+            self.originalPixmap = None
+            self.currentPath = None
+
     def createMenus(self):
         """
         Create the menu bar and add the "File" menu with actions:
@@ -912,9 +926,11 @@ class ImageViewer(QMainWindow):
         image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
+            return None
         else:
             self.originalPixmap = image
             self.adjustImageScale()
+            return image
 
     def adjustImageScale(self):
         """
@@ -941,20 +957,30 @@ class ImageViewer(QMainWindow):
         Show the previous image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentPath)
-            index = (index + 1) % len(self.verticalOrderSet)
-            currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            currentPath = self.currentPath
+            while len(self.verticalOrderSet):
+                index = self.verticalOrderSet.index(currentPath)
+                index = (index + 1) % len(self.verticalOrderSet)
+                newCurrentPath = self.verticalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def verticalNextImage(self):
         """
         Show the next image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentPath)
-            index = (index - 1) % len(self.verticalOrderSet)
-            currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            currentPath = self.currentPath
+            while len(self.verticalOrderSet):
+                index = self.verticalOrderSet.index(currentPath)
+                index = (index - 1) % len(self.verticalOrderSet)
+                newCurrentPath = self.verticalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -962,20 +988,30 @@ class ImageViewer(QMainWindow):
         Show the next image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentPath)
-            index = (index + 1) % len(self.horizontalOrderSet)
-            currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            currentPath = self.currentPath
+            while len(self.horizontalOrderSet):
+                index = self.horizontalOrderSet.index(currentPath)
+                index = (index + 1) % len(self.horizontalOrderSet)
+                newCurrentPath = self.horizontalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def horizontalPreviousImage(self):
         """
         Show the previous image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentPath)
-            index = (index - 1) % len(self.horizontalOrderSet)
-            currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile)
+            currentPath = self.currentPath
+            while len(self.horizontalOrderSet):
+                index = self.horizontalOrderSet.index(currentPath)
+                index = (index - 1) % len(self.horizontalOrderSet)
+                newCurrentPath = self.horizontalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def keyPressEvent(self, event):
         """
