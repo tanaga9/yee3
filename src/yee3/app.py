@@ -189,13 +189,11 @@ class ImageData:
 
     @staticmethod
     def generate(pseudo_random_seed, imagefile: ImageFile):
-
-        pseudo_random_hash = str(
-            uuid.uuid5(
-                pseudo_random_seed,
-                f"{imagefile.name}:{imagefile.stat_result.st_ctime:.32f}",
-            )
-        )
+        if imagefile.stat_result.st_ino > 0:
+            image_identifier = f"{imagefile.stat_result.st_ino}"
+        else:
+            image_identifier = f"{imagefile.name}:{imagefile.stat_result.st_ctime:.32f}"
+        pseudo_random_hash = str(uuid.uuid5(pseudo_random_seed, image_identifier))
         return ImageData(
             name=imagefile.name,
             path_nf=imagefile.path_nf,
