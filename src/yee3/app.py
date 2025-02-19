@@ -648,7 +648,7 @@ class ImageViewer(QMainWindow):
 
         self.label.setText(f"count: {len(self.mtimeOrderSet)}")
 
-        if len(self.mtimeOrderSet) == 0:
+        if len(self.mtimeOrderSet) == 0 or self.currentPath == imageData.path_nf:
             self.originalPixmap = None
             self.currentPath = None
 
@@ -870,6 +870,8 @@ class ImageViewer(QMainWindow):
 
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
+        self.currentPath = None
+        self.originalPixmap = None
 
         if not (
             self.currentPath
@@ -931,13 +933,14 @@ class ImageViewer(QMainWindow):
         :param filePath: The full path to the image file.
         """
         filePath = imageData.path_nf
-        self.currentPath = unicodedata.normalize("NFD", filePath)
+        currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
             return None
         else:
+            self.currentPath = currentPath
             self.originalPixmap = image
             self.adjustImageScale()
             return image
@@ -968,7 +971,7 @@ class ImageViewer(QMainWindow):
         """
         if self.verticalOrderSet:
             currentPath = self.currentPath
-            while len(self.verticalOrderSet):
+            while len(self.verticalOrderSet) and currentPath:
                 index = self.verticalOrderSet.index(currentPath)
                 indexNext = (index + 1) % len(self.verticalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext < index:
@@ -985,7 +988,7 @@ class ImageViewer(QMainWindow):
         """
         if self.verticalOrderSet:
             currentPath = self.currentPath
-            while len(self.verticalOrderSet):
+            while len(self.verticalOrderSet) and currentPath:
                 index = self.verticalOrderSet.index(currentPath)
                 indexNext = (index - 1) % len(self.verticalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext > index:
@@ -1003,7 +1006,7 @@ class ImageViewer(QMainWindow):
         """
         if self.horizontalOrderSet:
             currentPath = self.currentPath
-            while len(self.horizontalOrderSet):
+            while len(self.horizontalOrderSet) and currentPath:
                 index = self.horizontalOrderSet.index(currentPath)
                 indexNext = (index + 1) % len(self.horizontalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext < index:
@@ -1020,7 +1023,7 @@ class ImageViewer(QMainWindow):
         """
         if self.horizontalOrderSet:
             currentPath = self.currentPath
-            while len(self.horizontalOrderSet):
+            while len(self.horizontalOrderSet) and currentPath:
                 index = self.horizontalOrderSet.index(currentPath)
                 indexNext = (index - 1) % len(self.horizontalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext > index:
