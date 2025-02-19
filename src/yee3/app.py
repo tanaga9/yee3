@@ -12,6 +12,9 @@ from typing import Dict, List
 from dataclasses import dataclass, asdict
 from enum import IntEnum
 import uuid
+import io
+import zipfile
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -52,6 +55,7 @@ from PySide6.QtCore import (
     QThread,
     Signal,
     QFileSystemWatcher,
+    QByteArray,
 )
 
 # 0 <= decay < 1
@@ -91,6 +95,37 @@ scroll_factors_dict = {
         "interval": -1,
     },
 }
+
+
+def extract_preview_from_pxd(pxd_path):
+    preview_paths = ["QuickLook/Thumbnail.tiff", "QuickLook/Thumbnail.webp"]
+    if os.path.isfile(pxd_path):
+        with open(pxd_path, "rb") as f:
+            pxd_data = f.read()
+
+        with zipfile.ZipFile(io.BytesIO(pxd_data), "r") as zip_ref:
+            file_list = zip_ref.namelist()
+            for preview_path in preview_paths:
+                if preview_path in file_list:
+                    with zip_ref.open(preview_path) as preview_file:
+                        return preview_file.read()
+    elif os.path.isdir(pxd_path):
+        for preview_path in preview_paths:
+            thumbnail_path = os.path.join(pxd_path, preview_path)
+            if os.path.isfile(thumbnail_path):
+                with open(thumbnail_path, "rb") as preview_file:
+                    return preview_file.read()
+
+    return None
+
+
+image_format_extractors = {"pxd": extract_preview_from_pxd}
+
+
+def supportedImageFormats():
+    supportedFormats = QImageReader.supportedImageFormats()
+    imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
+    return imageExtensions + list(image_format_extractors.keys())
 
 
 def copy_with_unique_name(src, dst_dir):
@@ -455,8 +490,7 @@ class ImageLoaderWorker(QThread):
         self.filePath = os.path.abspath(filePath) if filePath is not None else None
 
     def run(self):
-        supportedFormats = QImageReader.supportedImageFormats()
-        imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
+        imageExtensions = supportedImageFormats()
 
         is_supported_image_format = lambda name: any(
             name.lower().endswith("." + ext) for ext in imageExtensions
@@ -685,10 +719,8 @@ class ImageViewer(QMainWindow):
         and display the selected image.
         """
         # Build a file filter from supported image formats.
-        supportedFormats = QImageReader.supportedImageFormats()
-        extensions = " ".join(
-            ["*." + str(fmt, "utf-8").lower() for fmt in supportedFormats]
-        )
+        supportedFormats = supportedImageFormats()
+        extensions = " ".join(["*." + fmt for fmt in supportedFormats])
         fileFilter = f"Images ({extensions})"
         filePath, _ = QFileDialog.getOpenFileName(
             self, "Open File", os.getcwd(), fileFilter
@@ -935,7 +967,16 @@ class ImageViewer(QMainWindow):
         filePath = imageData.path_nf
         currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
-        image = QPixmap(filePath)
+        ext = Path(filePath).suffix[1:]
+        if ext in image_format_extractors.keys():
+            image_data = image_format_extractors[ext](filePath)
+            if image_data:
+                image = QPixmap()
+                image.loadFromData(QByteArray(image_data))
+            else:
+                return None
+        else:
+            image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
             return None
@@ -1227,10 +1268,7 @@ class ImageViewer(QMainWindow):
         for url in event.mimeData().urls():
             filePath = url.toLocalFile()
             if os.path.isfile(filePath):
-                supportedFormats = QImageReader.supportedImageFormats()
-                imageExtensions = [
-                    str(fmt, "utf-8").lower() for fmt in supportedFormats
-                ]
+                imageExtensions = supportedImageFormats()
                 if any(filePath.lower().endswith(ext) for ext in imageExtensions):
                     self.loadImagesFromFolder(filePath)
                     break
