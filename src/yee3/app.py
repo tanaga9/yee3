@@ -636,6 +636,7 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = False
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
+        self.selected_file_path = None
 
     def remove(self, imageData: ImageData):
         if len(self.mtimeOrderSet) == 0:
@@ -878,6 +879,8 @@ class ImageViewer(QMainWindow):
             self.fnameOrderSet.clear()
             self.mtimeOrderSet.clear()
             self.randomOrderSet.clear()
+        else:
+            self.selected_file_path = filePath
 
         self.statusBar().showMessage("loading...", 2000)
 
@@ -902,8 +905,9 @@ class ImageViewer(QMainWindow):
         self.randomOrderSet.update(imageDataList)
 
         # Load the first image if no image is currently displayed
-        if existing_image_count == 0 and imageDataList:
+        if (existing_image_count == 0 or self.selected_file_path) and imageDataList:
             self.loadImageFromFile(imageDataList[0])
+        self.selected_file_path = None
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
         self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
