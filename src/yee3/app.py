@@ -798,6 +798,11 @@ class ImageViewer(QMainWindow):
         self.HScroll.setText("HScroll: random")
         self.HScroll.clicked.connect(self.onHScrollClicked)
 
+        self.loopScroll = QToolButton()
+        self.loopScroll.setText("Loop")
+        self.loopScroll.setCheckable(True)
+        self.loopScroll.setChecked(False)
+
         self.freeScroll = QToolButton()
         self.freeScroll.setText("Free Scroll")
         self.freeScroll.setCheckable(True)
@@ -819,6 +824,7 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.normalSizeAct)
         toolbar.addWidget(self.VScroll)
         toolbar.addWidget(self.HScroll)
+        toolbar.addWidget(self.loopScroll)
         toolbar.addWidget(self.freeScroll)
 
         label_action = QWidgetAction(toolbar)
@@ -960,8 +966,10 @@ class ImageViewer(QMainWindow):
             currentPath = self.currentPath
             while len(self.verticalOrderSet):
                 index = self.verticalOrderSet.index(currentPath)
-                index = (index + 1) % len(self.verticalOrderSet)
-                newCurrentPath = self.verticalOrderSet[index]
+                indexNext = (index + 1) % len(self.verticalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext < index:
+                    return
+                newCurrentPath = self.verticalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
@@ -975,8 +983,10 @@ class ImageViewer(QMainWindow):
             currentPath = self.currentPath
             while len(self.verticalOrderSet):
                 index = self.verticalOrderSet.index(currentPath)
-                index = (index - 1) % len(self.verticalOrderSet)
-                newCurrentPath = self.verticalOrderSet[index]
+                indexNext = (index - 1) % len(self.verticalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext > index:
+                    return
+                newCurrentPath = self.verticalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
@@ -991,8 +1001,10 @@ class ImageViewer(QMainWindow):
             currentPath = self.currentPath
             while len(self.horizontalOrderSet):
                 index = self.horizontalOrderSet.index(currentPath)
-                index = (index + 1) % len(self.horizontalOrderSet)
-                newCurrentPath = self.horizontalOrderSet[index]
+                indexNext = (index + 1) % len(self.horizontalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext < index:
+                    return
+                newCurrentPath = self.horizontalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
@@ -1006,8 +1018,10 @@ class ImageViewer(QMainWindow):
             currentPath = self.currentPath
             while len(self.horizontalOrderSet):
                 index = self.horizontalOrderSet.index(currentPath)
-                index = (index - 1) % len(self.horizontalOrderSet)
-                newCurrentPath = self.horizontalOrderSet[index]
+                indexNext = (index - 1) % len(self.horizontalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext > index:
+                    return
+                newCurrentPath = self.horizontalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
