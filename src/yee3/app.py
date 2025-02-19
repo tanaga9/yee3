@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, List
 from dataclasses import dataclass, asdict
 from enum import IntEnum
+import uuid
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -43,7 +44,15 @@ from PySide6.QtGui import (
     QAction,
     QShortcut,
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QThread, Signal
+from PySide6.QtCore import (
+    Qt,
+    QTimer,
+    QEvent,
+    QPoint,
+    QThread,
+    Signal,
+    QFileSystemWatcher,
+)
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -125,6 +134,13 @@ class SortedList:
         """Return the insertion index for item."""
         return bisect.bisect_left(self._list, item)
 
+    def remove(self, item):
+        index = bisect.bisect_left(self._list, item)
+        if index < len(self._list) and self._list[index] == item:
+            self._list.pop(index)
+        else:
+            raise ValueError(f"{item} not found in SortedList")
+
     def clear(self):
         """Clear all elements in the list."""
         self._list.clear()
@@ -176,6 +192,21 @@ class ImageData:
     name: str
     path_nf: str
     st_mtime: float
+    pseudo_random_hash: str
+
+    @staticmethod
+    def generate(pseudo_random_seed, imagefile: ImageFile):
+        if imagefile.stat_result.st_ino > 0:
+            image_identifier = f"{imagefile.stat_result.st_ino}"
+        else:
+            image_identifier = f"{imagefile.name}:{imagefile.stat_result.st_ctime:.32f}"
+        pseudo_random_hash = str(uuid.uuid5(pseudo_random_seed, image_identifier))
+        return ImageData(
+            name=imagefile.name,
+            path_nf=imagefile.path_nf,
+            st_mtime=imagefile.stat_result.st_mtime,
+            pseudo_random_hash=pseudo_random_hash,
+        )
 
 
 class FastOrderedSet:
@@ -217,6 +248,27 @@ class FastOrderedSet:
         """
         for item in sequence:
             self.add(item)
+
+    def remove(self, item: ImageData):
+        """
+        Remove the specified element from the set.
+        Raises a KeyError if the element does not exist.
+        """
+        # Check if the element exists in index_map
+        if item.path_nf not in self.index_map:
+            # raise KeyError(f"'{item.path_nf}' not found in FastOrderedSet")
+            return  # idempotent
+
+        # Remove from index_map
+        del self.index_map[item.path_nf]
+
+        # Remove from the items list
+        self.items.remove(item)
+
+        # If a key function is set, remove the key from SortedList as well
+        if self.key_func is not None:
+            key = self.key_func(item)
+            self.keys.remove(key)
 
     def clear(self):
         """Remove all elements from the set. O(1)."""
@@ -396,9 +448,10 @@ class ImageLoaderWorker(QThread):
     imageLoaded = Signal(str)
     finishedLoading = Signal()
 
-    def __init__(self, folder, filePath=None, parent=None):
+    def __init__(self, folder, pseudo_random_seed, filePath=None, parent=None):
         super().__init__(parent)
         self.folder = unicodedata.normalize("NFD", folder)
+        self.pseudo_random_seed = pseudo_random_seed
         self.filePath = os.path.abspath(filePath) if filePath is not None else None
 
     def run(self):
@@ -412,11 +465,7 @@ class ImageLoaderWorker(QThread):
             imagefile = ImageFile(path=self.filePath)
             if is_supported_image_format(imagefile.name):
                 if imagefile.stat():
-                    imageData = ImageData(
-                        name=imagefile.name,
-                        path_nf=imagefile.path_nf,
-                        st_mtime=imagefile.stat_result.st_mtime,
-                    )
+                    imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
         data = []
         last_emit_timestamp = datetime.now()
@@ -425,10 +474,8 @@ class ImageLoaderWorker(QThread):
                 imagefile = ImageFile(entry=entry)
                 if is_supported_image_format(imagefile.name):
                     if imagefile.stat():
-                        imageData = ImageData(
-                            name=imagefile.name,
-                            path_nf=imagefile.path_nf,
-                            st_mtime=imagefile.stat_result.st_mtime,
+                        imageData = ImageData.generate(
+                            self.pseudo_random_seed, imagefile
                         )
                         data.append(asdict(imageData))
                 now = datetime.now()
@@ -530,9 +577,11 @@ class ImageViewer(QMainWindow):
         # mtime order: images sorted by last modified time (newest first).
         self.mtimeOrderSet = FastOrderedSet(key_func=lambda p: -1 * p.st_mtime)
         # random order: images in random order (can be changed later to filename order).
-        self.randomOrderSet = FastOrderedSet()
+        self.randomOrderSet = FastOrderedSet(key_func=lambda p: p.pseudo_random_hash)
         # fname order: file name order
         self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.name)
+
+        self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
 
         self.verticalOrderSet = self.mtimeOrderSet
         self.horizontalOrderSet = self.randomOrderSet
@@ -585,6 +634,22 @@ class ImageViewer(QMainWindow):
         self.decayTimer.start(50)  # Called every 50ms
 
         self.lazyLoadingInProgress = False
+        self.watcher = QFileSystemWatcher()
+        self.watcher.directoryChanged.connect(self.on_directory_changed)
+
+    def remove(self, imageData: ImageData):
+        if len(self.mtimeOrderSet) == 0:
+            return
+
+        self.mtimeOrderSet.remove(imageData)
+        self.randomOrderSet.remove(imageData)
+        self.fnameOrderSet.remove(imageData)
+
+        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+
+        if len(self.mtimeOrderSet) == 0:
+            self.originalPixmap = None
+            self.currentPath = None
 
     def createMenus(self):
         """
@@ -628,8 +693,7 @@ class ImageViewer(QMainWindow):
             self, "Open File", os.getcwd(), fileFilter
         )
         if filePath:
-            folder = os.path.dirname(filePath)
-            self.loadImagesFromFolder(folder, filePath)
+            self.loadImagesFromFolder(filePath)
 
     def revealInFinder(self):
         """
@@ -707,6 +771,10 @@ class ImageViewer(QMainWindow):
         """
         Create actions for opening a folder, zooming in, zooming out, and resetting the image size.
         """
+
+        self.refreshFolder = QAction("Reload CurrentFolder", self)
+        self.refreshFolder.triggered.connect(self.reloadCurrentFolder)
+
         self.copyToAct = QAction("Copy to ...", self)
         # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
         self.copyToAct.triggered.connect(self.showCopyDock)
@@ -744,6 +812,7 @@ class ImageViewer(QMainWindow):
         """
         toolbar = QToolBar("Toolbar")
         self.addToolBar(toolbar)
+        toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
         toolbar.addAction(self.zoomInAct)
         toolbar.addAction(self.zoomOutAct)
@@ -764,26 +833,53 @@ class ImageViewer(QMainWindow):
         if folder:
             self.loadImagesFromFolder(folder)
 
-    def loadImagesFromFolder(self, folder, filePath=None):
+    def reloadCurrentFolder(self):
+        """
+        Reload the current folder and refresh the displayed images.
+        """
+        if self.currentPath:
+            return self.loadImagesFromFolder(self.currentPath)
+
+    def loadImagesFromFolder(self, path, refresh_random_seed=False):
         """
         Load all image files from the specified folder, create two sort orders,
         and display the first image.
 
-        :param folder: The folder from which to load images.
+        :param path: The path to the folder or file to load images from.
         """
 
         if self.lazyLoadingInProgress:
             return
-        self.lazyLoadingInProgress = True
 
-        # Clear all image sets
-        self.fnameOrderSet.clear()
-        self.mtimeOrderSet.clear()
-        self.randomOrderSet.clear()
+        if os.path.isfile(path):
+            filePath = path
+            folderPath = os.path.dirname(path)
+        elif os.path.isdir(path):
+            filePath = None
+            folderPath = path
+        else:
+            return
+            # raise ValueError("The specified path is neither a file nor a directory.")
+
+        self.lazyLoadingInProgress = True
+        self.watcher.removePaths(self.watcher.directories())
+
+        if not (
+            self.currentPath
+            and os.path.samefile(os.path.dirname(self.currentPath), folderPath)
+        ):
+            # Clear all image sets
+            self.fnameOrderSet.clear()
+            self.mtimeOrderSet.clear()
+            self.randomOrderSet.clear()
 
         self.statusBar().showMessage("loading...", 2000)
 
-        self.imageLoader = ImageLoaderWorker(folder, filePath)
+        if refresh_random_seed:
+            self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
+        self.imageLoader = ImageLoaderWorker(
+            folderPath, self.pseudo_random_seed, filePath
+        )
         self.imageLoader.imageLoaded.connect(self.handleNewImage)
         self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
         self.imageLoader.start()
@@ -801,31 +897,40 @@ class ImageViewer(QMainWindow):
 
         # Load the first image if no image is currently displayed
         if existing_image_count == 0 and imageDataList:
-            self.loadImageFromFile(imageDataList[0].path_nf)
+            self.loadImageFromFile(imageDataList[0])
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
         self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
 
     def finishLoadingImages(self):
         """ """
-        self.lazyLoadingInProgress = False
         self.statusBar().showMessage("Complete", 3000)
         self.label.setText(f"count: {len(self.mtimeOrderSet)}")
 
-    def loadImageFromFile(self, filePath):
+        self.lazyLoadingInProgress = False
+        if self.currentPath:
+            self.watcher.addPath(os.path.dirname(self.currentPath))
+
+    def on_directory_changed(self, path):
+        self.reloadCurrentFolder()
+
+    def loadImageFromFile(self, imageData: ImageData):
         """
         Load and display the image specified by filePath.
 
         :param filePath: The full path to the image file.
         """
+        filePath = imageData.path_nf
         self.currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         image = QPixmap(filePath)
         if image.isNull():
             self.imageLabel.setText("Unable to load image.")
+            return None
         else:
             self.originalPixmap = image
             self.adjustImageScale()
+            return image
 
     def adjustImageScale(self):
         """
@@ -852,20 +957,30 @@ class ImageViewer(QMainWindow):
         Show the previous image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentPath)
-            index = (index + 1) % len(self.verticalOrderSet)
-            currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.verticalOrderSet):
+                index = self.verticalOrderSet.index(currentPath)
+                index = (index + 1) % len(self.verticalOrderSet)
+                newCurrentPath = self.verticalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def verticalNextImage(self):
         """
         Show the next image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentPath)
-            index = (index - 1) % len(self.verticalOrderSet)
-            currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.verticalOrderSet):
+                index = self.verticalOrderSet.index(currentPath)
+                index = (index - 1) % len(self.verticalOrderSet)
+                newCurrentPath = self.verticalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -873,20 +988,30 @@ class ImageViewer(QMainWindow):
         Show the next image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentPath)
-            index = (index + 1) % len(self.horizontalOrderSet)
-            currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.horizontalOrderSet):
+                index = self.horizontalOrderSet.index(currentPath)
+                index = (index + 1) % len(self.horizontalOrderSet)
+                newCurrentPath = self.horizontalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def horizontalPreviousImage(self):
         """
         Show the previous image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentPath)
-            index = (index - 1) % len(self.horizontalOrderSet)
-            currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.horizontalOrderSet):
+                index = self.horizontalOrderSet.index(currentPath)
+                index = (index - 1) % len(self.horizontalOrderSet)
+                newCurrentPath = self.horizontalOrderSet[index]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def keyPressEvent(self, event):
         """
@@ -1086,8 +1211,7 @@ class ImageViewer(QMainWindow):
                     str(fmt, "utf-8").lower() for fmt in supportedFormats
                 ]
                 if any(filePath.lower().endswith(ext) for ext in imageExtensions):
-                    folder = os.path.dirname(filePath)
-                    self.loadImagesFromFolder(folder, filePath)
+                    self.loadImagesFromFolder(filePath)
                     break
             elif os.path.isdir(filePath):
                 self.loadImagesFromFolder(filePath)
@@ -1313,11 +1437,7 @@ def initialize_image_viewer(imagePath=None):
     # If an image file is provided as a command-line argument, load its folder and display that image.
     if imagePath is not None:
         imagePath = unicodedata.normalize("NFD", imagePath)
-        if os.path.isfile(imagePath):
-            folder = os.path.dirname(imagePath)
-            viewer.loadImagesFromFolder(folder, imagePath)
-        elif os.path.isdir(imagePath):
-            viewer.loadImagesFromFolder(imagePath)
+        viewer.loadImagesFromFolder(imagePath)
 
     viewer.show()
     return viewer
