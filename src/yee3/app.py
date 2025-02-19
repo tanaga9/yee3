@@ -894,8 +894,14 @@ class ImageViewer(QMainWindow):
             filePath = path
             folderPath = os.path.dirname(path)
         elif os.path.isdir(path):
-            filePath = None
-            folderPath = path
+            dir_path = Path(path)
+            ext = dir_path.suffix[1:]
+            if ext in image_format_extractors.keys():
+                filePath = path
+                folderPath = dir_path.parent.as_posix()
+            else:
+                filePath = None
+                folderPath = path
         else:
             return
             # raise ValueError("The specified path is neither a file nor a directory.")
