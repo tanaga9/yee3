@@ -49,6 +49,7 @@ from PySide6.QtGui import (
     QAction,
     QShortcut,
     QFont,
+    QMovie,
 )
 from PySide6.QtCore import (
     Qt,
@@ -122,6 +123,7 @@ def extract_preview_from_pxd(pxd_path):
     return None
 
 
+image_format_animated = ["gif", "webp"]
 image_format_extractors = {"pxd": extract_preview_from_pxd}
 
 
@@ -454,15 +456,34 @@ class ImageDisplayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.pixmap = None
+        self.movie = None
         self.scaleFactor = 1.0  # Scale factor, adjusted as needed
+
+    def setData(self, pixmap: QPixmap, movie: QMovie = None):
+        """Set the image data"""
+        if self.movie:
+            self.movie.stop()
+            self.movie.frameChanged.disconnect(self.update)
+            # self.movie.deleteLater()
+        if movie:
+            self.movie = movie
+            self.movie.frameChanged.connect(self.update)
+            self.movie.start()
+        else:
+            self.movie = None
+        self.setPixmap(pixmap)
 
     def setPixmap(self, pixmap: QPixmap):
         """Set the image pixmap"""
         self.pixmap = pixmap
         self.update()  # Redraw to update the image
 
-    def clearImage(self):
+    def clearData(self):
         """Clear the displayed image"""
+        if self.movie:
+            self.movie.stop()
+            self.movie.frameChanged.disconnect(self.update)
+            # self.movie.deleteLater()
         self.pixmap = None
         self.update()  # Redraw to reflect the change
 
@@ -474,13 +495,21 @@ class ImageDisplayWidget(QWidget):
     def paintEvent(self, event):
         """Render the image on the widget"""
         painter = QPainter(self)
+        scaleFactor = 1
+        if self.movie:
+            # Draw the movie frame
+            self.pixmap = self.movie.currentPixmap()
+            scaleFactor = self.scaleFactor
         if self.pixmap:
-            # Scale the image as needed
-            new_width = int(self.pixmap.width() * self.scaleFactor)
-            new_height = int(self.pixmap.height() * self.scaleFactor)
-            scaled_pixmap = self.pixmap.scaled(
-                new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
+            if scaleFactor == 1:
+                scaled_pixmap = self.pixmap
+            else:
+                # Scale the image as needed
+                new_width = int(self.pixmap.width() * scaleFactor)
+                new_height = int(self.pixmap.height() * scaleFactor)
+                scaled_pixmap = self.pixmap.scaled(
+                    new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
             # Calculate position to center the image within the widget
             x = (self.width() - scaled_pixmap.width()) // 2
             y = (self.height() - scaled_pixmap.height()) // 2
@@ -1054,12 +1083,15 @@ class ImageViewer(QMainWindow):
         else:
             image = QPixmap(filePath)
         if image.isNull():
-            self.imageDisplay.clearImage()
+            self.imageDisplay.clearData()
             return None
         else:
             self.currentPath = currentPath
             self.originalPixmap = image
-            # self.imageDisplay.setPixmap(self.originalPixmap)
+            self.imageDisplay.setData(
+                self.originalPixmap,
+                QMovie(filePath) if ext in image_format_animated else None,
+            )
             self.adjustImageScale()
             count = self.counter.count()
             self.count_label.setText(f"{count:>3} ips")
@@ -1082,6 +1114,7 @@ class ImageViewer(QMainWindow):
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.imageDisplay.setPixmap(scaledPixmap)
+            self.imageDisplay.setScaleFactor(self.scaleFactor)
             self.imageDisplay.resize(scaledPixmap.size())
 
     # --- Vertical Navigation (sorted by last modified time) ---
@@ -1315,6 +1348,7 @@ class ImageViewer(QMainWindow):
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.imageDisplay.setPixmap(scaledPixmap)
+            self.imageDisplay.setScaleFactor(self.scaleFactor)
             self.imageDisplay.resize(scaledPixmap.size())
 
     def contextMenuEvent(self, event):
