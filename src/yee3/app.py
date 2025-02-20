@@ -102,7 +102,7 @@ scroll_factors_dict = {
 
 
 def extract_preview_from_pxd(pxd_path):
-    preview_paths = ["QuickLook/Thumbnail.tiff", "QuickLook/Thumbnail.webp"]
+    preview_paths = ["QuickLook/Thumbnail.webp", "QuickLook/Thumbnail.tiff"]
     if os.path.isfile(pxd_path):
         with open(pxd_path, "rb") as f:
             pxd_data = f.read()
@@ -124,7 +124,10 @@ def extract_preview_from_pxd(pxd_path):
 
 
 image_format_animated = ["gif", "webp"]
-image_format_extractors = {"pxd": extract_preview_from_pxd}
+image_format_extractors = {
+    "pxm": extract_preview_from_pxd,
+    "pxd": extract_preview_from_pxd,
+}
 
 
 def supportedImageFormats():
@@ -1074,7 +1077,11 @@ class ImageViewer(QMainWindow):
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         ext = Path(filePath).suffix[1:]
         if ext in image_format_extractors.keys():
-            image_data = image_format_extractors[ext](filePath)
+            try:
+                image_data = image_format_extractors[ext](filePath)
+            except Exception as e:
+                print("Error loading image:", e, filePath)
+                return None
             if image_data:
                 image = QPixmap()
                 image.loadFromData(QByteArray(image_data))
