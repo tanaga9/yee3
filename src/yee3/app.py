@@ -977,8 +977,6 @@ class ImageViewer(QMainWindow):
 
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
-        self.currentPath = None
-        self.originalPixmap = None
 
         if not (
             self.currentPath
@@ -990,6 +988,9 @@ class ImageViewer(QMainWindow):
             self.randomOrderSet.clear()
         else:
             self.selected_file_path = filePath
+
+        self.currentPath = None
+        self.originalPixmap = None
 
         self.statusBar().showMessage("loading...", 2000)
 
