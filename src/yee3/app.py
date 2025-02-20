@@ -15,6 +15,8 @@ import uuid
 import io
 import zipfile
 from pathlib import Path
+import time
+from collections import deque
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -46,6 +48,7 @@ from PySide6.QtGui import (
     QBrush,
     QAction,
     QShortcut,
+    QFont,
 )
 from PySide6.QtCore import (
     Qt,
@@ -153,6 +156,22 @@ def copy_with_unique_name(src, dst_dir):
 
     shutil.copy2(src, dst_path)
     return dst_path
+
+
+class RecentCounter:
+    def __init__(self, time_window=1):
+        self.times = deque()
+        self.time_window = time_window
+
+    def count(self):
+        now = time.time()
+        self.times.append(now)
+
+        # Remove old entries
+        while self.times and self.times[0] < now - self.time_window:
+            self.times.popleft()
+
+        return len(self.times)
 
 
 class SortedList:
@@ -431,6 +450,43 @@ class HorizontalGauge(QWidget):
         painter.drawRect(int(x_pos), 0, int(gauge_length), int(self.bar_height))
 
 
+class ImageDisplayWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = None
+        self.scaleFactor = 1.0  # Scale factor, adjusted as needed
+
+    def setPixmap(self, pixmap: QPixmap):
+        """Set the image pixmap"""
+        self.pixmap = pixmap
+        self.update()  # Redraw to update the image
+
+    def clearImage(self):
+        """Clear the displayed image"""
+        self.pixmap = None
+        self.update()  # Redraw to reflect the change
+
+    def setScaleFactor(self, factor: float):
+        """Set the scale factor"""
+        self.scaleFactor = factor
+        self.update()
+
+    def paintEvent(self, event):
+        """Render the image on the widget"""
+        painter = QPainter(self)
+        if self.pixmap:
+            # Scale the image as needed
+            new_width = int(self.pixmap.width() * self.scaleFactor)
+            new_height = int(self.pixmap.height() * self.scaleFactor)
+            scaled_pixmap = self.pixmap.scaled(
+                new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            # Calculate position to center the image within the widget
+            x = (self.width() - scaled_pixmap.width()) // 2
+            y = (self.height() - scaled_pixmap.height()) // 2
+            painter.drawPixmap(x, y, scaled_pixmap)
+
+
 class ReplaceDialogResult(IntEnum):
     CANCEL = 0
     REPLACE = 1
@@ -569,22 +625,21 @@ class ImageViewer(QMainWindow):
         )
 
         # Create a label to display images.
-        self.imageLabel = QLabel()
-        self.imageLabel.setBackgroundRole(QPalette.Base)
-        self.imageLabel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self.imageLabel.setScaledContents(True)
+        self.imageDisplay = ImageDisplayWidget()
+        self.imageDisplay.setBackgroundRole(QPalette.Base)
+        self.imageDisplay.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
         # Set up a scroll area with a black background.
         self.scrollArea = QScrollArea()
         self.scrollArea.setAlignment(Qt.AlignCenter)
         self.scrollArea.setStyleSheet("background-color: #222;")
-        self.scrollArea.setWidget(self.imageLabel)
+        self.scrollArea.setWidget(self.imageDisplay)
         # Prevent the scroll area from taking focus so that key events are handled by the main window.
         self.scrollArea.setFocusPolicy(Qt.NoFocus)
         self.setCentralWidget(self.scrollArea)
 
         # Install an event filter to capture double-click events.
-        self.imageLabel.installEventFilter(self)
+        self.imageDisplay.installEventFilter(self)
         self.scrollArea.installEventFilter(self)
 
         # Create and always show the status bar.
@@ -671,6 +726,8 @@ class ImageViewer(QMainWindow):
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
         self.selected_file_path = None
+
+        self.counter = RecentCounter()
 
     def remove(self, imageData: ImageData):
         if len(self.mtimeOrderSet) == 0:
@@ -841,8 +898,16 @@ class ImageViewer(QMainWindow):
         self.freeScroll.setCheckable(True)
         self.freeScroll.setChecked(False)
 
+        font = QFont("Courier New")
+        font.setStyleHint(QFont.Monospace)
+
+        self.count_label = QLabel("")
+        self.count_label.setFixedWidth(68)
+        self.count_label.setFont(font)
+
         self.label = QLabel("count: ")
         self.label.setFixedWidth(150)
+        self.label.setFont(font)
 
     def createToolbar(self):
         """
@@ -859,6 +924,10 @@ class ImageViewer(QMainWindow):
         toolbar.addWidget(self.HScroll)
         toolbar.addWidget(self.loopScroll)
         toolbar.addWidget(self.freeScroll)
+
+        count_label_action = QWidgetAction(toolbar)
+        count_label_action.setDefaultWidget(self.count_label)
+        toolbar.addAction(count_label_action)
 
         label_action = QWidgetAction(toolbar)
         label_action.setDefaultWidget(self.label)
@@ -984,12 +1053,15 @@ class ImageViewer(QMainWindow):
         else:
             image = QPixmap(filePath)
         if image.isNull():
-            self.imageLabel.setText("Unable to load image.")
+            self.imageDisplay.clearImage()
             return None
         else:
             self.currentPath = currentPath
             self.originalPixmap = image
+            # self.imageDisplay.setPixmap(self.originalPixmap)
             self.adjustImageScale()
+            count = self.counter.count()
+            self.count_label.setText(f"{count:>3} ips")
             return image
 
     def adjustImageScale(self):
@@ -1008,8 +1080,8 @@ class ImageViewer(QMainWindow):
             scaledPixmap = self.originalPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.imageLabel.setPixmap(scaledPixmap)
-            self.imageLabel.resize(scaledPixmap.size())
+            self.imageDisplay.setPixmap(scaledPixmap)
+            self.imageDisplay.resize(scaledPixmap.size())
 
     # --- Vertical Navigation (sorted by last modified time) ---
     def verticalPreviousImage(self):
@@ -1241,8 +1313,8 @@ class ImageViewer(QMainWindow):
             scaledPixmap = self.originalPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.imageLabel.setPixmap(scaledPixmap)
-            self.imageLabel.resize(scaledPixmap.size())
+            self.imageDisplay.setPixmap(scaledPixmap)
+            self.imageDisplay.resize(scaledPixmap.size())
 
     def contextMenuEvent(self, event):
         """
@@ -1438,7 +1510,7 @@ class ImageViewer(QMainWindow):
           - Adjust width to maintain the aspect ratio of the currently displayed image.
         """
         if (
-            obj == self.imageLabel or obj == self.scrollArea
+            obj == self.imageDisplay or obj == self.scrollArea
         ) and event.type() == QEvent.MouseButtonDblClick:
             screen_geometry = QApplication.primaryScreen().availableGeometry()
             screen_height = screen_geometry.height()
