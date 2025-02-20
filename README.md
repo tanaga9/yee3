@@ -27,7 +27,7 @@ How to build an app on your local Mac
 - **Build**
     - `iconutil -c icns src/yee3/resources/yee3.iconset`
     - `pdm run briefcase build macOS`
-    - `patch -u < Info.plist.patch`
+    - `cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.`
 
 
 Used via Automator (without build)

@@ -16,8 +16,7 @@ class MacOSFileHandler(NSObject):
             imagePath = imagePaths[0]
             if len(self.windows) == 1 and self.windows[0].currentPath is None:
                 window = self.windows[0]
-                folder = os.path.dirname(imagePath)
-                window.loadImagesFromFolder(folder, imagePath)
+                window.loadImagesFromFolder(imagePath)
             else:
                 window = initialize_image_viewer(imagePath)
                 self.windows.append(window)
