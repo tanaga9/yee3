@@ -123,11 +123,26 @@ def extract_preview_from_pxd(pxd_path):
     return None
 
 
+def load_and_convert_avif(avif_path):
+    img = Image.open(avif_path)
+    img_bytes = io.BytesIO()
+    img.save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+    return img_bytes.read()
+
+
 image_format_animated = ["gif", "webp"]
 image_format_extractors = {
     "pxm": extract_preview_from_pxd,
     "pxd": extract_preview_from_pxd,
 }
+try:
+    import pillow_avif
+    from PIL import Image
+except ImportError:
+    pass
+else:
+    image_format_extractors["avif"] = load_and_convert_avif
 
 
 def supportedImageFormats():
