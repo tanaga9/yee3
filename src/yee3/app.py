@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
+    QPinchGesture,
 )
 from PySide6.QtGui import (
     QPixmap,
@@ -776,6 +777,8 @@ class ImageViewer(QMainWindow):
 
         self.counter = RecentCounter()
 
+        self.grabGesture(Qt.PinchGesture)
+
     def remove(self, imageData: ImageData):
         if len(self.mtimeOrderSet) == 0:
             return
@@ -916,13 +919,13 @@ class ImageViewer(QMainWindow):
         # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
         self.copyToAct.triggered.connect(self.showCopyDock)
 
-        self.zoomInAct = QAction("Zoom In", self)
-        self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
-        self.zoomInAct.triggered.connect(self.zoomIn)
+        # self.zoomInAct = QAction("Zoom In", self)
+        # self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
+        # self.zoomInAct.triggered.connect(self.zoomIn)
 
-        self.zoomOutAct = QAction("Zoom Out", self)
-        self.zoomOutAct.setShortcut(QKeySequence.ZoomOut)
-        self.zoomOutAct.triggered.connect(self.zoomOut)
+        # self.zoomOutAct = QAction("Zoom Out", self)
+        # self.zoomOutAct.setShortcut(QKeySequence.ZoomOut)
+        # self.zoomOutAct.triggered.connect(self.zoomOut)
 
         self.normalSizeAct = QAction("Normal Size", self)
         self.normalSizeAct.triggered.connect(self.normalSize)
@@ -964,8 +967,8 @@ class ImageViewer(QMainWindow):
         self.addToolBar(toolbar)
         toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
-        toolbar.addAction(self.zoomInAct)
-        toolbar.addAction(self.zoomOutAct)
+        # toolbar.addAction(self.zoomInAct)
+        # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
         toolbar.addWidget(self.VScroll)
         toolbar.addWidget(self.HScroll)
@@ -1127,10 +1130,12 @@ class ImageViewer(QMainWindow):
             availableWidth = self.scrollArea.viewport().width()
             availableHeight = self.scrollArea.viewport().height()
             imageSize = self.originalPixmap.size()
-            scale = min(
+            # Calculate the optimal scale for the screen
+            self.fittedScale = min(
                 availableWidth / imageSize.width(), availableHeight / imageSize.height()
             )
-            self.scaleFactor = scale
+            # Adjust the current scale to the optimal size
+            self.scaleFactor = self.fittedScale
             newSize = imageSize * self.scaleFactor
             scaledPixmap = self.originalPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -1251,6 +1256,15 @@ class ImageViewer(QMainWindow):
             scroll_factors = scroll_factors_dict["free"]
         else:
             scroll_factors = scroll_factors_dict["limit"]
+
+            # If zoomed in and the scrollbar is visible, reduce sensitivity
+            if (
+                self.scaleFactor / self.fittedScale >= 1.25
+                and self.scrollArea.verticalScrollBar().maximum() > 0
+            ):
+                threshold = 180
+                if max(abs(deltaY), abs(deltaX)) < threshold:
+                    return
 
         # Vertical scroll accumulation
         self.scrollAccumulationY += deltaY * scroll_factors["vertical"]["scroll"]
@@ -1588,6 +1602,9 @@ class ImageViewer(QMainWindow):
             self.move(new_x, new_y)
             self.resize(new_width, adjusted_height)
 
+            self.adjustImageScale()
+            # self.scaleFactor = self.fittedScale
+
             return True
 
         return super().eventFilter(obj, event)
@@ -1623,6 +1640,58 @@ class ImageViewer(QMainWindow):
         if event.button() == Qt.LeftButton:
             self.dragging = False
             event.accept()
+
+    def event(self, event):
+        if event.type() == QEvent.Gesture:
+            return self.gestureEvent(event)
+        return super().event(event)
+
+    def gestureEvent(self, event):
+        pinch = event.gesture(Qt.PinchGesture)
+        if pinch:
+            if pinch.changeFlags() & QPinchGesture.ScaleFactorChanged:
+                self.handlePinch(pinch)
+            return True
+        return False
+
+    def handlePinch(self, pinch):
+        factor = pinch.scaleFactor()
+        new_scale = self.scaleFactor * factor
+
+        # Limit the maximum and minimum zoom scale
+        max_zoom = self.fittedScale * 5.0  # Maximum 5x
+        min_zoom = self.fittedScale * 0.2  # Minimum 20%
+
+        if new_scale > max_zoom:
+            factor = max_zoom / self.scaleFactor
+        elif new_scale < min_zoom:
+            factor = min_zoom / self.scaleFactor
+
+        # Determine the pinch center point
+        if pinch.centerPoint().isNull():
+            # hotSpot() is already in global coordinates, so use it as is
+            centerPoint = pinch.hotSpot().toPoint()
+            # Convert to the coordinate system of imageDisplay
+            localPos = self.imageDisplay.mapFromGlobal(centerPoint)
+        else:
+            centerPoint = pinch.centerPoint().toPoint()
+            # If centerPoint is in global coordinates, directly convert to viewport coordinates
+            localPos = self.scrollArea.viewport().mapFromGlobal(centerPoint)
+
+        # Adjust scroll position
+        hbar = self.scrollArea.horizontalScrollBar()
+        vbar = self.scrollArea.verticalScrollBar()
+        oldHValue = hbar.value()
+        oldVValue = vbar.value()
+
+        # Apply the zoom scale to the image
+        self.scaleImage(factor)
+
+        # Adjust scroll position after zooming
+        newHValue = int(factor * (oldHValue + localPos.x()) - localPos.x())
+        newVValue = int(factor * (oldVValue + localPos.y()) - localPos.y())
+        hbar.setValue(newHValue)
+        vbar.setValue(newVValue)
 
 
 def initialize_image_viewer(imagePath=None):
