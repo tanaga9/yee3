@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from Foundation import NSObject
 from Cocoa import NSApp
 
-from yee3.app import initialize_image_viewer
+from yee3.app import initialize_image_viewer, OSType
 
 
 class MacOSFileHandler(NSObject):
@@ -16,10 +16,9 @@ class MacOSFileHandler(NSObject):
             imagePath = imagePaths[0]
             if len(self.windows) == 1 and self.windows[0].currentPath is None:
                 window = self.windows[0]
-                folder = os.path.dirname(imagePath)
-                window.loadImagesFromFolder(folder, imagePath)
+                window.loadImagesFromFolder(imagePath)
             else:
-                window = initialize_image_viewer(imagePath)
+                window = initialize_image_viewer(imagePath, os_type=OSType.MACOS)
                 self.windows.append(window)
         except Exception as e:
             QMessageBox.critical(None, "", str(e))
@@ -31,9 +30,9 @@ def main():
 
     imagePath = sys.argv[1] if len(sys.argv) > 1 else None
     if imagePath:
-        window = initialize_image_viewer(imagePath)
+        window = initialize_image_viewer(imagePath, os_type=OSType.MACOS)
     else:
-        window = initialize_image_viewer()
+        window = initialize_image_viewer(os_type=OSType.MACOS)
 
     delegate.windows.append(window)
     # QMessageBox.information(

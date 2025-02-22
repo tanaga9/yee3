@@ -10,6 +10,14 @@ import unicodedata
 from datetime import datetime
 from typing import Dict, List
 from dataclasses import dataclass, asdict
+from enum import IntEnum, Enum, auto
+import platform
+import uuid
+import io
+import zipfile
+from pathlib import Path
+import time
+from collections import deque
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +34,11 @@ from PySide6.QtWidgets import (
     QToolButton,
     QWidget,
     QWidgetAction,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QPinchGesture,
 )
 from PySide6.QtGui import (
     QPixmap,
@@ -37,8 +50,19 @@ from PySide6.QtGui import (
     QBrush,
     QAction,
     QShortcut,
+    QFont,
+    QMovie,
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QThread, Signal
+from PySide6.QtCore import (
+    Qt,
+    QTimer,
+    QEvent,
+    QPoint,
+    QThread,
+    Signal,
+    QFileSystemWatcher,
+    QByteArray,
+)
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -79,6 +103,63 @@ scroll_factors_dict = {
 }
 
 
+class OSType(Enum):
+    WINDOWS = auto()
+    LINUX = auto()
+    MACOS = auto()
+    UNKNOWN = auto()
+
+
+def extract_preview_from_pxd(pxd_path):
+    preview_paths = ["QuickLook/Thumbnail.webp", "QuickLook/Thumbnail.tiff"]
+    if os.path.isfile(pxd_path):
+        with open(pxd_path, "rb") as f:
+            pxd_data = f.read()
+
+        with zipfile.ZipFile(io.BytesIO(pxd_data), "r") as zip_ref:
+            file_list = zip_ref.namelist()
+            for preview_path in preview_paths:
+                if preview_path in file_list:
+                    with zip_ref.open(preview_path) as preview_file:
+                        return preview_file.read()
+    elif os.path.isdir(pxd_path):
+        for preview_path in preview_paths:
+            thumbnail_path = os.path.join(pxd_path, preview_path)
+            if os.path.isfile(thumbnail_path):
+                with open(thumbnail_path, "rb") as preview_file:
+                    return preview_file.read()
+
+    return None
+
+
+def load_and_convert_avif(avif_path):
+    img = Image.open(avif_path)
+    img_bytes = io.BytesIO()
+    img.save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+    return img_bytes.read()
+
+
+image_format_animated = ["gif", "webp"]
+image_format_extractors = {
+    "pxm": extract_preview_from_pxd,
+    "pxd": extract_preview_from_pxd,
+}
+try:
+    import pillow_avif
+    from PIL import Image
+except ImportError:
+    pass
+else:
+    image_format_extractors["avif"] = load_and_convert_avif
+
+
+def supportedImageFormats():
+    supportedFormats = QImageReader.supportedImageFormats()
+    imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
+    return imageExtensions + list(image_format_extractors.keys())
+
+
 def copy_with_unique_name(src, dst_dir):
     """
     Copies a file to the specified directory.
@@ -106,6 +187,22 @@ def copy_with_unique_name(src, dst_dir):
     return dst_path
 
 
+class RecentCounter:
+    def __init__(self, time_window=1):
+        self.times = deque()
+        self.time_window = time_window
+
+    def count(self):
+        now = time.time()
+        self.times.append(now)
+
+        # Remove old entries
+        while self.times and self.times[0] < now - self.time_window:
+            self.times.popleft()
+
+        return len(self.times)
+
+
 class SortedList:
     """A simple sorted list implementation using bisect."""
 
@@ -119,6 +216,13 @@ class SortedList:
     def bisect_left(self, item):
         """Return the insertion index for item."""
         return bisect.bisect_left(self._list, item)
+
+    def remove(self, item):
+        index = bisect.bisect_left(self._list, item)
+        if index < len(self._list) and self._list[index] == item:
+            self._list.pop(index)
+        else:
+            raise ValueError(f"{item} not found in SortedList")
 
     def clear(self):
         """Clear all elements in the list."""
@@ -171,6 +275,21 @@ class ImageData:
     name: str
     path_nf: str
     st_mtime: float
+    pseudo_random_hash: str
+
+    @staticmethod
+    def generate(pseudo_random_seed, imagefile: ImageFile):
+        if imagefile.stat_result.st_ino > 0:
+            image_identifier = f"{imagefile.stat_result.st_ino}"
+        else:
+            image_identifier = f"{imagefile.name}:{imagefile.stat_result.st_ctime:.32f}"
+        pseudo_random_hash = str(uuid.uuid5(pseudo_random_seed, image_identifier))
+        return ImageData(
+            name=imagefile.name,
+            path_nf=imagefile.path_nf,
+            st_mtime=imagefile.stat_result.st_mtime,
+            pseudo_random_hash=pseudo_random_hash,
+        )
 
 
 class FastOrderedSet:
@@ -212,6 +331,27 @@ class FastOrderedSet:
         """
         for item in sequence:
             self.add(item)
+
+    def remove(self, item: ImageData):
+        """
+        Remove the specified element from the set.
+        Raises a KeyError if the element does not exist.
+        """
+        # Check if the element exists in index_map
+        if item.path_nf not in self.index_map:
+            # raise KeyError(f"'{item.path_nf}' not found in FastOrderedSet")
+            return  # idempotent
+
+        # Remove from index_map
+        del self.index_map[item.path_nf]
+
+        # Remove from the items list
+        self.items.remove(item)
+
+        # If a key function is set, remove the key from SortedList as well
+        if self.key_func is not None:
+            key = self.key_func(item)
+            self.keys.remove(key)
 
     def clear(self):
         """Remove all elements from the set. O(1)."""
@@ -339,18 +479,130 @@ class HorizontalGauge(QWidget):
         painter.drawRect(int(x_pos), 0, int(gauge_length), int(self.bar_height))
 
 
+class ImageDisplayWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = None
+        self.movie = None
+        self.scaleFactor = 1.0  # Scale factor, adjusted as needed
+
+    def setData(self, pixmap: QPixmap, movie: QMovie = None):
+        """Set the image data"""
+        if self.movie:
+            self.movie.stop()
+            self.movie.frameChanged.disconnect(self.update)
+            # self.movie.deleteLater()
+        if movie:
+            self.movie = movie
+            self.movie.frameChanged.connect(self.update)
+            self.movie.start()
+        else:
+            self.movie = None
+        self.setPixmap(pixmap)
+
+    def setPixmap(self, pixmap: QPixmap):
+        """Set the image pixmap"""
+        self.pixmap = pixmap
+        self.update()  # Redraw to update the image
+
+    def clearData(self):
+        """Clear the displayed image"""
+        if self.movie:
+            self.movie.stop()
+            self.movie.frameChanged.disconnect(self.update)
+            # self.movie.deleteLater()
+        self.pixmap = None
+        self.update()  # Redraw to reflect the change
+
+    def setScaleFactor(self, factor: float):
+        """Set the scale factor"""
+        self.scaleFactor = factor
+        self.update()
+
+    def paintEvent(self, event):
+        """Render the image on the widget"""
+        painter = QPainter(self)
+        scaleFactor = 1
+        if self.movie:
+            # Draw the movie frame
+            self.pixmap = self.movie.currentPixmap()
+            scaleFactor = self.scaleFactor
+        if self.pixmap:
+            if scaleFactor == 1:
+                scaled_pixmap = self.pixmap
+            else:
+                # Scale the image as needed
+                new_width = int(self.pixmap.width() * scaleFactor)
+                new_height = int(self.pixmap.height() * scaleFactor)
+                scaled_pixmap = self.pixmap.scaled(
+                    new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            # Calculate position to center the image within the widget
+            x = (self.width() - scaled_pixmap.width()) // 2
+            y = (self.height() - scaled_pixmap.height()) // 2
+            painter.drawPixmap(x, y, scaled_pixmap)
+
+
+class ReplaceDialogResult(IntEnum):
+    CANCEL = 0
+    REPLACE = 1
+    RENAME = 2
+
+
+class ReplaceDialog(QDialog):
+    def __init__(self, filePath, pixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("File Already Exists")
+        self.resize(500, 400)  # Adjust size as needed
+
+        # Create layout
+        main_layout = QVBoxLayout(self)
+
+        # Message label
+        message = QLabel(f"{filePath} already exists.")
+        message.setFixedWidth(400)
+        message.setWordWrap(True)
+        message.setMaximumHeight(400)
+        message.setAlignment(Qt.AlignCenter | Qt.AlignTop)
+        main_layout.addWidget(message)
+
+        # Image preview label
+        if pixmap:
+            image_label = QLabel()
+            image_label.setPixmap(pixmap)
+            image_label.setAlignment(Qt.AlignCenter)
+            main_layout.addWidget(image_label)
+
+        # Create button layout
+        button_layout = QHBoxLayout()
+        self.cancelButton = QPushButton("Cancel")
+        self.replaceButton = QPushButton("Replace")
+        self.renameButton = QPushButton("Rename")
+        button_layout.addWidget(self.cancelButton)
+        button_layout.addWidget(self.replaceButton)
+        button_layout.addWidget(self.renameButton)
+        main_layout.addLayout(button_layout)
+
+        # Connect button signals (returns 1, 2, or 0 respectively)
+        self.replaceButton.clicked.connect(
+            lambda: self.done(ReplaceDialogResult.REPLACE)
+        )
+        self.renameButton.clicked.connect(lambda: self.done(ReplaceDialogResult.RENAME))
+        self.cancelButton.clicked.connect(lambda: self.done(ReplaceDialogResult.CANCEL))
+
+
 class ImageLoaderWorker(QThread):
     imageLoaded = Signal(str)
     finishedLoading = Signal()
 
-    def __init__(self, folder, filePath=None, parent=None):
+    def __init__(self, folder, pseudo_random_seed, filePath=None, parent=None):
         super().__init__(parent)
         self.folder = unicodedata.normalize("NFD", folder)
+        self.pseudo_random_seed = pseudo_random_seed
         self.filePath = os.path.abspath(filePath) if filePath is not None else None
 
     def run(self):
-        supportedFormats = QImageReader.supportedImageFormats()
-        imageExtensions = [str(fmt, "utf-8").lower() for fmt in supportedFormats]
+        imageExtensions = supportedImageFormats()
 
         is_supported_image_format = lambda name: any(
             name.lower().endswith("." + ext) for ext in imageExtensions
@@ -359,11 +611,7 @@ class ImageLoaderWorker(QThread):
             imagefile = ImageFile(path=self.filePath)
             if is_supported_image_format(imagefile.name):
                 if imagefile.stat():
-                    imageData = ImageData(
-                        name=imagefile.name,
-                        path_nf=imagefile.path_nf,
-                        st_mtime=imagefile.stat_result.st_mtime,
-                    )
+                    imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
         data = []
         last_emit_timestamp = datetime.now()
@@ -372,10 +620,8 @@ class ImageLoaderWorker(QThread):
                 imagefile = ImageFile(entry=entry)
                 if is_supported_image_format(imagefile.name):
                     if imagefile.stat():
-                        imageData = ImageData(
-                            name=imagefile.name,
-                            path_nf=imagefile.path_nf,
-                            st_mtime=imagefile.stat_result.st_mtime,
+                        imageData = ImageData.generate(
+                            self.pseudo_random_seed, imagefile
                         )
                         data.append(asdict(imageData))
                 now = datetime.now()
@@ -417,9 +663,22 @@ class ImageViewer(QMainWindow):
     The status bar is always visible from the start.
     """
 
-    def __init__(self):
+    def __init__(self, os_type: OSType):
         super().__init__()
         self.setWindowTitle("Yee3")
+
+        self.os_type = os_type
+        if self.os_type == OSType.MACOS:
+            self.setUnifiedTitleAndToolBarOnMac(True)
+            # self.setWindowFlags(Qt.Window)
+            # self.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+            self.grabGesture(Qt.PinchGesture)
+        elif self.os_type == OSType.WINDOWS:
+            # self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+            pass
+        elif self.os_type == OSType.LINUX:
+            # self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+            pass
 
         # Load window settings (size, position, and copy destinations) from configuration file.
         self.copyDestinations = {}  # Mapping for keys 1..9 to destination folders.
@@ -435,22 +694,21 @@ class ImageViewer(QMainWindow):
         )
 
         # Create a label to display images.
-        self.imageLabel = QLabel()
-        self.imageLabel.setBackgroundRole(QPalette.Base)
-        self.imageLabel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self.imageLabel.setScaledContents(True)
+        self.imageDisplay = ImageDisplayWidget()
+        self.imageDisplay.setBackgroundRole(QPalette.Base)
+        self.imageDisplay.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
         # Set up a scroll area with a black background.
         self.scrollArea = QScrollArea()
         self.scrollArea.setAlignment(Qt.AlignCenter)
         self.scrollArea.setStyleSheet("background-color: #222;")
-        self.scrollArea.setWidget(self.imageLabel)
+        self.scrollArea.setWidget(self.imageDisplay)
         # Prevent the scroll area from taking focus so that key events are handled by the main window.
         self.scrollArea.setFocusPolicy(Qt.NoFocus)
         self.setCentralWidget(self.scrollArea)
 
         # Install an event filter to capture double-click events.
-        self.imageLabel.installEventFilter(self)
+        self.imageDisplay.installEventFilter(self)
         self.scrollArea.installEventFilter(self)
 
         # Create and always show the status bar.
@@ -477,9 +735,11 @@ class ImageViewer(QMainWindow):
         # mtime order: images sorted by last modified time (newest first).
         self.mtimeOrderSet = FastOrderedSet(key_func=lambda p: -1 * p.st_mtime)
         # random order: images in random order (can be changed later to filename order).
-        self.randomOrderSet = FastOrderedSet()
+        self.randomOrderSet = FastOrderedSet(key_func=lambda p: p.pseudo_random_hash)
         # fname order: file name order
         self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.name)
+
+        self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
 
         self.verticalOrderSet = self.mtimeOrderSet
         self.horizontalOrderSet = self.randomOrderSet
@@ -502,7 +762,9 @@ class ImageViewer(QMainWindow):
         self.copyShortcuts = {}
         for i in range(1, 10):
             # On macOS, "Meta" represents the Command key.
-            sc = QShortcut(QKeySequence(f"Meta+{i}"), self)
+            # sc = QShortcut(QKeySequence(f"Meta+{i}"), self)
+            # I’m not sure why, but it works as intended when I change Meta to Ctrl.
+            sc = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             sc.activated.connect(lambda i=i: self.copyToDestination(i))
             self.copyShortcuts[i] = sc
 
@@ -530,6 +792,25 @@ class ImageViewer(QMainWindow):
         self.decayTimer.start(50)  # Called every 50ms
 
         self.lazyLoadingInProgress = False
+        self.watcher = QFileSystemWatcher()
+        self.watcher.directoryChanged.connect(self.on_directory_changed)
+        self.selected_file_path = None
+
+        self.counter = RecentCounter()
+
+    def remove(self, imageData: ImageData):
+        if len(self.mtimeOrderSet) == 0:
+            return
+
+        self.mtimeOrderSet.remove(imageData)
+        self.randomOrderSet.remove(imageData)
+        self.fnameOrderSet.remove(imageData)
+
+        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+
+        if len(self.mtimeOrderSet) == 0 or self.currentPath == imageData.path_nf:
+            self.originalPixmap = None
+            self.currentPath = None
 
     def createMenus(self):
         """
@@ -550,9 +831,10 @@ class ImageViewer(QMainWindow):
         openFileAction.triggered.connect(self.openFile)
         fileMenu.addAction(openFileAction)
 
-        revealAction = QAction("Reveal in Finder", self)
-        revealAction.triggered.connect(self.revealInFinder)
-        fileMenu.addAction(revealAction)
+        if self.os_type == OSType.MACOS:
+            revealAction = QAction("Reveal in Finder", self)
+            revealAction.triggered.connect(self.revealInFinder)
+            fileMenu.addAction(revealAction)
 
         copyToAction = QAction("Copy to ...", self)
         copyToAction.triggered.connect(self.showCopyDock)
@@ -564,17 +846,14 @@ class ImageViewer(QMainWindow):
         and display the selected image.
         """
         # Build a file filter from supported image formats.
-        supportedFormats = QImageReader.supportedImageFormats()
-        extensions = " ".join(
-            ["*." + str(fmt, "utf-8").lower() for fmt in supportedFormats]
-        )
+        supportedFormats = supportedImageFormats()
+        extensions = " ".join(["*." + fmt for fmt in supportedFormats])
         fileFilter = f"Images ({extensions})"
         filePath, _ = QFileDialog.getOpenFileName(
             self, "Open File", os.getcwd(), fileFilter
         )
         if filePath:
-            folder = os.path.dirname(filePath)
-            self.loadImagesFromFolder(folder, filePath)
+            self.loadImagesFromFolder(filePath)
 
     def revealInFinder(self):
         """
@@ -652,17 +931,21 @@ class ImageViewer(QMainWindow):
         """
         Create actions for opening a folder, zooming in, zooming out, and resetting the image size.
         """
+
+        self.refreshFolder = QAction("Reload CurrentFolder", self)
+        self.refreshFolder.triggered.connect(self.reloadCurrentFolder)
+
         self.copyToAct = QAction("Copy to ...", self)
         # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
         self.copyToAct.triggered.connect(self.showCopyDock)
 
-        self.zoomInAct = QAction("Zoom In", self)
-        self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
-        self.zoomInAct.triggered.connect(self.zoomIn)
+        # self.zoomInAct = QAction("Zoom In", self)
+        # self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
+        # self.zoomInAct.triggered.connect(self.zoomIn)
 
-        self.zoomOutAct = QAction("Zoom Out", self)
-        self.zoomOutAct.setShortcut(QKeySequence.ZoomOut)
-        self.zoomOutAct.triggered.connect(self.zoomOut)
+        # self.zoomOutAct = QAction("Zoom Out", self)
+        # self.zoomOutAct.setShortcut(QKeySequence.ZoomOut)
+        # self.zoomOutAct.triggered.connect(self.zoomOut)
 
         self.normalSizeAct = QAction("Normal Size", self)
         self.normalSizeAct.triggered.connect(self.normalSize)
@@ -675,13 +958,26 @@ class ImageViewer(QMainWindow):
         self.HScroll.setText("HScroll: random")
         self.HScroll.clicked.connect(self.onHScrollClicked)
 
+        self.loopScroll = QToolButton()
+        self.loopScroll.setText("Loop")
+        self.loopScroll.setCheckable(True)
+        self.loopScroll.setChecked(False)
+
         self.freeScroll = QToolButton()
         self.freeScroll.setText("Free Scroll")
         self.freeScroll.setCheckable(True)
         self.freeScroll.setChecked(False)
 
+        font = QFont("Courier New")
+        font.setStyleHint(QFont.Monospace)
+
+        self.count_label = QLabel("")
+        self.count_label.setFixedWidth(68)
+        self.count_label.setFont(font)
+
         self.label = QLabel("count: ")
         self.label.setFixedWidth(150)
+        self.label.setFont(font)
 
     def createToolbar(self):
         """
@@ -689,13 +985,19 @@ class ImageViewer(QMainWindow):
         """
         toolbar = QToolBar("Toolbar")
         self.addToolBar(toolbar)
+        toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
-        toolbar.addAction(self.zoomInAct)
-        toolbar.addAction(self.zoomOutAct)
+        # toolbar.addAction(self.zoomInAct)
+        # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
         toolbar.addWidget(self.VScroll)
         toolbar.addWidget(self.HScroll)
+        toolbar.addWidget(self.loopScroll)
         toolbar.addWidget(self.freeScroll)
+
+        count_label_action = QWidgetAction(toolbar)
+        count_label_action.setDefaultWidget(self.count_label)
+        toolbar.addAction(count_label_action)
 
         label_action = QWidgetAction(toolbar)
         label_action.setDefaultWidget(self.label)
@@ -709,26 +1011,64 @@ class ImageViewer(QMainWindow):
         if folder:
             self.loadImagesFromFolder(folder)
 
-    def loadImagesFromFolder(self, folder, filePath=None):
+    def reloadCurrentFolder(self):
+        """
+        Reload the current folder and refresh the displayed images.
+        """
+        if self.currentPath:
+            return self.loadImagesFromFolder(self.currentPath)
+
+    def loadImagesFromFolder(self, path, refresh_random_seed=False):
         """
         Load all image files from the specified folder, create two sort orders,
         and display the first image.
 
-        :param folder: The folder from which to load images.
+        :param path: The path to the folder or file to load images from.
         """
 
         if self.lazyLoadingInProgress:
             return
-        self.lazyLoadingInProgress = True
 
-        # Clear all image sets
-        self.fnameOrderSet.clear()
-        self.mtimeOrderSet.clear()
-        self.randomOrderSet.clear()
+        if os.path.isfile(path):
+            filePath = path
+            folderPath = os.path.dirname(path)
+        elif os.path.isdir(path):
+            dir_path = Path(path)
+            ext = dir_path.suffix[1:]
+            if ext in image_format_extractors.keys():
+                filePath = path
+                folderPath = dir_path.parent.as_posix()
+            else:
+                filePath = None
+                folderPath = path
+        else:
+            return
+            # raise ValueError("The specified path is neither a file nor a directory.")
+
+        self.lazyLoadingInProgress = True
+        self.watcher.removePaths(self.watcher.directories())
+
+        if not (
+            self.currentPath
+            and os.path.samefile(os.path.dirname(self.currentPath), folderPath)
+        ):
+            # Clear all image sets
+            self.fnameOrderSet.clear()
+            self.mtimeOrderSet.clear()
+            self.randomOrderSet.clear()
+        else:
+            self.selected_file_path = filePath
+
+        self.currentPath = None
+        self.originalPixmap = None
 
         self.statusBar().showMessage("loading...", 2000)
 
-        self.imageLoader = ImageLoaderWorker(folder, filePath)
+        if refresh_random_seed:
+            self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
+        self.imageLoader = ImageLoaderWorker(
+            folderPath, self.pseudo_random_seed, filePath
+        )
         self.imageLoader.imageLoaded.connect(self.handleNewImage)
         self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
         self.imageLoader.start()
@@ -745,32 +1085,62 @@ class ImageViewer(QMainWindow):
         self.randomOrderSet.update(imageDataList)
 
         # Load the first image if no image is currently displayed
-        if existing_image_count == 0 and imageDataList:
-            self.loadImageFromFile(imageDataList[0].path_nf)
+        if (existing_image_count == 0 or self.selected_file_path) and imageDataList:
+            self.loadImageFromFile(imageDataList[0])
+        self.selected_file_path = None
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
         self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
 
     def finishLoadingImages(self):
         """ """
-        self.lazyLoadingInProgress = False
         self.statusBar().showMessage("Complete", 3000)
         self.label.setText(f"count: {len(self.mtimeOrderSet)}")
 
-    def loadImageFromFile(self, filePath):
+        self.lazyLoadingInProgress = False
+        if self.currentPath:
+            self.watcher.addPath(os.path.dirname(self.currentPath))
+
+    def on_directory_changed(self, path):
+        self.reloadCurrentFolder()
+
+    def loadImageFromFile(self, imageData: ImageData):
         """
         Load and display the image specified by filePath.
 
         :param filePath: The full path to the image file.
         """
-        self.currentPath = unicodedata.normalize("NFD", filePath)
+        filePath = imageData.path_nf
+        currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
-        image = QPixmap(filePath)
-        if image.isNull():
-            self.imageLabel.setText("Unable to load image.")
+        ext = Path(filePath).suffix[1:]
+        if ext in image_format_extractors.keys():
+            try:
+                image_data = image_format_extractors[ext](filePath)
+            except Exception as e:
+                print("Error loading image:", e, filePath)
+                return None
+            if image_data:
+                image = QPixmap()
+                image.loadFromData(QByteArray(image_data))
+            else:
+                return None
         else:
+            image = QPixmap(filePath)
+        if image.isNull():
+            self.imageDisplay.clearData()
+            return None
+        else:
+            self.currentPath = currentPath
             self.originalPixmap = image
+            self.imageDisplay.setData(
+                self.originalPixmap,
+                QMovie(filePath) if ext in image_format_animated else None,
+            )
             self.adjustImageScale()
+            count = self.counter.count()
+            self.count_label.setText(f"{count:>3} ips")
+            return image
 
     def adjustImageScale(self):
         """
@@ -780,37 +1150,54 @@ class ImageViewer(QMainWindow):
             availableWidth = self.scrollArea.viewport().width()
             availableHeight = self.scrollArea.viewport().height()
             imageSize = self.originalPixmap.size()
-            scale = min(
+            # Calculate the optimal scale for the screen
+            self.fittedScale = min(
                 availableWidth / imageSize.width(), availableHeight / imageSize.height()
             )
-            self.scaleFactor = scale
+            # Adjust the current scale to the optimal size
+            self.scaleFactor = self.fittedScale
             newSize = imageSize * self.scaleFactor
             scaledPixmap = self.originalPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.imageLabel.setPixmap(scaledPixmap)
-            self.imageLabel.resize(scaledPixmap.size())
+            self.imageDisplay.setPixmap(scaledPixmap)
+            self.imageDisplay.setScaleFactor(self.scaleFactor)
+            self.imageDisplay.resize(scaledPixmap.size())
 
     # --- Vertical Navigation (sorted by last modified time) ---
-    def verticalNextImage(self):
-        """
-        Show the next image in vertical order (sorted by last modified time).
-        """
-        if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentPath)
-            index = (index + 1) % len(self.verticalOrderSet)
-            currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
-
     def verticalPreviousImage(self):
         """
         Show the previous image in vertical order (sorted by last modified time).
         """
         if self.verticalOrderSet:
-            index = self.verticalOrderSet.index(self.currentPath)
-            index = (index - 1) % len(self.verticalOrderSet)
-            currentFile = self.verticalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.verticalOrderSet) and currentPath:
+                index = self.verticalOrderSet.index(currentPath)
+                indexNext = (index + 1) % len(self.verticalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext < index:
+                    return
+                newCurrentPath = self.verticalOrderSet[indexNext]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
+
+    def verticalNextImage(self):
+        """
+        Show the next image in vertical order (sorted by last modified time).
+        """
+        if self.verticalOrderSet:
+            currentPath = self.currentPath
+            while len(self.verticalOrderSet) and currentPath:
+                index = self.verticalOrderSet.index(currentPath)
+                indexNext = (index - 1) % len(self.verticalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext > index:
+                    return
+                newCurrentPath = self.verticalOrderSet[indexNext]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -818,20 +1205,34 @@ class ImageViewer(QMainWindow):
         Show the next image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentPath)
-            index = (index + 1) % len(self.horizontalOrderSet)
-            currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.horizontalOrderSet) and currentPath:
+                index = self.horizontalOrderSet.index(currentPath)
+                indexNext = (index + 1) % len(self.horizontalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext < index:
+                    return
+                newCurrentPath = self.horizontalOrderSet[indexNext]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def horizontalPreviousImage(self):
         """
         Show the previous image in horizontal order (random order).
         """
         if self.horizontalOrderSet:
-            index = self.horizontalOrderSet.index(self.currentPath)
-            index = (index - 1) % len(self.horizontalOrderSet)
-            currentFile = self.horizontalOrderSet[index]
-            self.loadImageFromFile(currentFile.path_nf)
+            currentPath = self.currentPath
+            while len(self.horizontalOrderSet) and currentPath:
+                index = self.horizontalOrderSet.index(currentPath)
+                indexNext = (index - 1) % len(self.horizontalOrderSet)
+                if not self.loopScroll.isChecked() and indexNext > index:
+                    return
+                newCurrentPath = self.horizontalOrderSet[indexNext]
+                if self.loadImageFromFile(newCurrentPath) is None:
+                    self.remove(newCurrentPath)
+                else:
+                    break
 
     def keyPressEvent(self, event):
         """
@@ -875,6 +1276,15 @@ class ImageViewer(QMainWindow):
             scroll_factors = scroll_factors_dict["free"]
         else:
             scroll_factors = scroll_factors_dict["limit"]
+
+            # If zoomed in and the scrollbar is visible, reduce sensitivity
+            if (
+                self.scaleFactor / self.fittedScale >= 1.25
+                and self.scrollArea.verticalScrollBar().maximum() > 0
+            ):
+                threshold = 180
+                if max(abs(deltaY), abs(deltaX)) < threshold:
+                    return
 
         # Vertical scroll accumulation
         self.scrollAccumulationY += deltaY * scroll_factors["vertical"]["scroll"]
@@ -993,22 +1403,26 @@ class ImageViewer(QMainWindow):
             scaledPixmap = self.originalPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.imageLabel.setPixmap(scaledPixmap)
-            self.imageLabel.resize(scaledPixmap.size())
+            self.imageDisplay.setPixmap(scaledPixmap)
+            self.imageDisplay.setScaleFactor(self.scaleFactor)
+            self.imageDisplay.resize(scaledPixmap.size())
 
     def contextMenuEvent(self, event):
         """
         Display a context menu on right-click with an option to reveal the current file in Finder.
         """
         menu = QMenu(self)
-        revealAction = menu.addAction("Reveal in Finder")
+        actions = {}
+        if self.os_type == OSType.MACOS:
+            actions[menu.addAction("Reveal in Finder")] = "reveal"
         action = menu.exec_(event.globalPos())
-        if action == revealAction:
-            if self.currentPath is not None:
-                try:
-                    subprocess.call(["open", "-R", self.currentPath])
-                except Exception as e:
-                    print("Error revealing file in Finder:", e)
+        if action in actions:
+            if actions[action] == "reveal":
+                if self.currentPath is not None:
+                    try:
+                        subprocess.call(["open", "-R", self.currentPath])
+                    except Exception as e:
+                        print("Error revealing file in Finder:", e)
 
     def dragEnterEvent(self, event):
         """
@@ -1026,13 +1440,9 @@ class ImageViewer(QMainWindow):
         for url in event.mimeData().urls():
             filePath = url.toLocalFile()
             if os.path.isfile(filePath):
-                supportedFormats = QImageReader.supportedImageFormats()
-                imageExtensions = [
-                    str(fmt, "utf-8").lower() for fmt in supportedFormats
-                ]
+                imageExtensions = supportedImageFormats()
                 if any(filePath.lower().endswith(ext) for ext in imageExtensions):
-                    folder = os.path.dirname(filePath)
-                    self.loadImagesFromFolder(folder, filePath)
+                    self.loadImagesFromFolder(filePath)
                     break
             elif os.path.isdir(filePath):
                 self.loadImagesFromFolder(filePath)
@@ -1128,15 +1538,54 @@ class ImageViewer(QMainWindow):
             dest = folder
             self.copyDestinations[str(index)] = dest
             self.updateCopyList()
+
         if self.currentPath:
-            print(f"Copying '{self.currentPath}' to destination '{dest}'")
-            try:
-                copy_with_unique_name(self.currentPath, dest)
-                self.statusBar().showMessage(f"Copied file to {dest}", 3000)
-            except Exception as e:
-                self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+            fileName = os.path.basename(self.currentPath)
+            targetPath = os.path.join(dest, fileName)
+            if os.path.exists(targetPath):
+                # If an existing file is an image, generate a thumbnail
+                pixmap = QPixmap(targetPath)
+                if not pixmap.isNull():
+                    # For example, scale to 400×400
+                    scaled_pixmap = pixmap.scaled(
+                        400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                else:
+                    scaled_pixmap = None
+
+                # Display a custom dialog
+                dialog = ReplaceDialog(targetPath, scaled_pixmap, self)
+                result = dialog.exec()
+
+                if result == ReplaceDialogResult.REPLACE:
+                    # Replace copy
+                    try:
+                        shutil.copy2(self.currentPath, targetPath)
+                        self.statusBar().showMessage(f"Replaced file at {dest}", 3000)
+                    except Exception as e:
+                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                elif result == ReplaceDialogResult.RENAME:
+                    # Copy with a new name
+                    try:
+                        copy_with_unique_name(self.currentPath, dest)
+                        self.statusBar().showMessage(
+                            f"Copied to {dest} with a new name", 3000
+                        )
+                    except Exception as e:
+                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                elif result == ReplaceDialogResult.CANCEL:
+                    # Cancel
+                    self.statusBar().showMessage("Copy canceled", 3000)
+                    return
+            else:
+                # If there is no file with the same name, perform a normal copy
+                try:
+                    shutil.copy2(self.currentPath, targetPath)
+                    self.statusBar().showMessage(f"Copied to {dest}", 3000)
+                except Exception as e:
+                    self.statusBar().showMessage(f"Copy failed: {e}", 3000)
         else:
-            print("No current file set for copying.")
+            print("No current file available.")
 
     def onCopyListDoubleClicked(self, item):
         """
@@ -1155,7 +1604,7 @@ class ImageViewer(QMainWindow):
           - Adjust width to maintain the aspect ratio of the currently displayed image.
         """
         if (
-            obj == self.imageLabel or obj == self.scrollArea
+            obj == self.imageDisplay or obj == self.scrollArea
         ) and event.type() == QEvent.MouseButtonDblClick:
             screen_geometry = QApplication.primaryScreen().availableGeometry()
             screen_height = screen_geometry.height()
@@ -1175,6 +1624,9 @@ class ImageViewer(QMainWindow):
             new_y = self.geometry().y()
             self.move(new_x, new_y)
             self.resize(new_width, adjusted_height)
+
+            self.adjustImageScale()
+            # self.scaleFactor = self.fittedScale
 
             return True
 
@@ -1212,18 +1664,78 @@ class ImageViewer(QMainWindow):
             self.dragging = False
             event.accept()
 
+    def event(self, event):
+        if event.type() == QEvent.Gesture:
+            return self.gestureEvent(event)
+        return super().event(event)
 
-def initialize_image_viewer(imagePath=None):
-    viewer = ImageViewer()
+    def gestureEvent(self, event):
+        pinch = event.gesture(Qt.PinchGesture)
+        if pinch:
+            if pinch.changeFlags() & QPinchGesture.ScaleFactorChanged:
+                self.handlePinch(pinch)
+            return True
+        return False
+
+    def handlePinch(self, pinch):
+        factor = pinch.scaleFactor()
+        new_scale = self.scaleFactor * factor
+
+        # Limit the maximum and minimum zoom scale
+        max_zoom = self.fittedScale * 5.0  # Maximum 5x
+        min_zoom = self.fittedScale * 0.2  # Minimum 20%
+
+        if new_scale > max_zoom:
+            factor = max_zoom / self.scaleFactor
+        elif new_scale < min_zoom:
+            factor = min_zoom / self.scaleFactor
+
+        # Determine the pinch center point
+        if pinch.centerPoint().isNull():
+            # hotSpot() is already in global coordinates, so use it as is
+            centerPoint = pinch.hotSpot().toPoint()
+            # Convert to the coordinate system of imageDisplay
+            localPos = self.imageDisplay.mapFromGlobal(centerPoint)
+        else:
+            centerPoint = pinch.centerPoint().toPoint()
+            # If centerPoint is in global coordinates, directly convert to viewport coordinates
+            localPos = self.scrollArea.viewport().mapFromGlobal(centerPoint)
+
+        # Adjust scroll position
+        hbar = self.scrollArea.horizontalScrollBar()
+        vbar = self.scrollArea.verticalScrollBar()
+        oldHValue = hbar.value()
+        oldVValue = vbar.value()
+
+        # Apply the zoom scale to the image
+        self.scaleImage(factor)
+
+        # Adjust scroll position after zooming
+        newHValue = int(factor * (oldHValue + localPos.x()) - localPos.x())
+        newVValue = int(factor * (oldVValue + localPos.y()) - localPos.y())
+        hbar.setValue(newHValue)
+        vbar.setValue(newVValue)
+
+
+def get_os_type():
+    system_name = platform.system().lower()
+    if "windows" in system_name:
+        return OSType.WINDOWS
+    elif "linux" in system_name:
+        return OSType.LINUX
+    elif "darwin" in system_name:
+        return OSType.MACOS
+    else:
+        return OSType.UNKNOWN
+
+
+def initialize_image_viewer(imagePath=None, os_type: OSType = get_os_type()):
+    viewer = ImageViewer(os_type)
 
     # If an image file is provided as a command-line argument, load its folder and display that image.
     if imagePath is not None:
         imagePath = unicodedata.normalize("NFD", imagePath)
-        if os.path.isfile(imagePath):
-            folder = os.path.dirname(imagePath)
-            viewer.loadImagesFromFolder(folder, imagePath)
-        elif os.path.isdir(imagePath):
-            viewer.loadImagesFromFolder(imagePath)
+        viewer.loadImagesFromFolder(imagePath)
 
     viewer.show()
     return viewer

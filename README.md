@@ -10,8 +10,7 @@ Sleek and fast.
 [Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I built this with ChatGPT (o3-mini-high).
 
 Designed for macOS.
-
-🔔 It’s better **not** to proceed with `Open With` → `Change All…` just yet.
+half-hearted Windows support.
 
 Concept and design
 ----------------
@@ -27,7 +26,7 @@ How to build an app on your local Mac
 - **Build**
     - `iconutil -c icns src/yee3/resources/yee3.iconset`
     - `pdm run briefcase build macOS`
-    - `patch -u < Info.plist.patch`
+    - `cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.`
 
 
 Used via Automator (without build)
