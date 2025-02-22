@@ -10,8 +10,7 @@ Sleek and fast.
 [Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I built this with ChatGPT (o3-mini-high).
 
 Designed for macOS.
-
-🔔 It’s better **not** to proceed with `Open With` → `Change All…` just yet.
+half-hearted Windows support.
 
 Concept and design
 ----------------
