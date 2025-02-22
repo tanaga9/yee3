@@ -10,7 +10,8 @@ import unicodedata
 from datetime import datetime
 from typing import Dict, List
 from dataclasses import dataclass, asdict
-from enum import IntEnum
+from enum import IntEnum, Enum, auto
+import platform
 import uuid
 import io
 import zipfile
@@ -100,6 +101,13 @@ scroll_factors_dict = {
         "interval": -1,
     },
 }
+
+
+class OSType(Enum):
+    WINDOWS = auto()
+    LINUX = auto()
+    MACOS = auto()
+    UNKNOWN = auto()
 
 
 def extract_preview_from_pxd(pxd_path):
@@ -655,9 +663,22 @@ class ImageViewer(QMainWindow):
     The status bar is always visible from the start.
     """
 
-    def __init__(self):
+    def __init__(self, os_type: OSType):
         super().__init__()
         self.setWindowTitle("Yee3")
+
+        self.os_type = os_type
+        if self.os_type == OSType.MACOS:
+            self.setUnifiedTitleAndToolBarOnMac(True)
+            # self.setWindowFlags(Qt.Window)
+            # self.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+            self.grabGesture(Qt.PinchGesture)
+        elif self.os_type == OSType.WINDOWS:
+            # self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+            pass
+        elif self.os_type == OSType.LINUX:
+            # self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+            pass
 
         # Load window settings (size, position, and copy destinations) from configuration file.
         self.copyDestinations = {}  # Mapping for keys 1..9 to destination folders.
@@ -777,8 +798,6 @@ class ImageViewer(QMainWindow):
 
         self.counter = RecentCounter()
 
-        self.grabGesture(Qt.PinchGesture)
-
     def remove(self, imageData: ImageData):
         if len(self.mtimeOrderSet) == 0:
             return
@@ -812,9 +831,10 @@ class ImageViewer(QMainWindow):
         openFileAction.triggered.connect(self.openFile)
         fileMenu.addAction(openFileAction)
 
-        revealAction = QAction("Reveal in Finder", self)
-        revealAction.triggered.connect(self.revealInFinder)
-        fileMenu.addAction(revealAction)
+        if self.os_type == OSType.MACOS:
+            revealAction = QAction("Reveal in Finder", self)
+            revealAction.triggered.connect(self.revealInFinder)
+            fileMenu.addAction(revealAction)
 
         copyToAction = QAction("Copy to ...", self)
         copyToAction.triggered.connect(self.showCopyDock)
@@ -1392,14 +1412,17 @@ class ImageViewer(QMainWindow):
         Display a context menu on right-click with an option to reveal the current file in Finder.
         """
         menu = QMenu(self)
-        revealAction = menu.addAction("Reveal in Finder")
+        actions = {}
+        if self.os_type == OSType.MACOS:
+            actions[menu.addAction("Reveal in Finder")] = "reveal"
         action = menu.exec_(event.globalPos())
-        if action == revealAction:
-            if self.currentPath is not None:
-                try:
-                    subprocess.call(["open", "-R", self.currentPath])
-                except Exception as e:
-                    print("Error revealing file in Finder:", e)
+        if action in actions:
+            if actions[action] == "reveal":
+                if self.currentPath is not None:
+                    try:
+                        subprocess.call(["open", "-R", self.currentPath])
+                    except Exception as e:
+                        print("Error revealing file in Finder:", e)
 
     def dragEnterEvent(self, event):
         """
@@ -1694,8 +1717,20 @@ class ImageViewer(QMainWindow):
         vbar.setValue(newVValue)
 
 
-def initialize_image_viewer(imagePath=None):
-    viewer = ImageViewer()
+def get_os_type():
+    system_name = platform.system().lower()
+    if "windows" in system_name:
+        return OSType.WINDOWS
+    elif "linux" in system_name:
+        return OSType.LINUX
+    elif "darwin" in system_name:
+        return OSType.MACOS
+    else:
+        return OSType.UNKNOWN
+
+
+def initialize_image_viewer(imagePath=None, os_type: OSType = get_os_type()):
+    viewer = ImageViewer(os_type)
 
     # If an image file is provided as a command-line argument, load its folder and display that image.
     if imagePath is not None:
