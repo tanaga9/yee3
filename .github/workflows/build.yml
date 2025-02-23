@@ -193,7 +193,7 @@ jobs:
           echo "✅ Version match: $VERSION_TAG"
         shell: bash
 
-      - name: List directory contents
+      - name: List directory contents 1
         run: |
           dir
           Get-ChildItem -Path . -Recurse
@@ -202,7 +202,7 @@ jobs:
       - name: Compress built app into ZIP
         shell: powershell
         run: |
-          Compress-Archive -Path "Yee 3-$env:VERSION_TAG.msi" -DestinationPath "Yee_3-$env:VERSION_TAG_windows.zip"
+          Compress-Archive -Path "Yee 3-$env:VERSION_TAG.msi" -DestinationPath "Yee_3-$($env:VERSION_TAG)_windows.zip"
 
       - name: Create GitHub Release (Windows)
         id: create_release_windows
@@ -215,6 +215,12 @@ jobs:
           body: Automated Windows release for version ${{ github.ref_name }}.
           draft: false
           prerelease: false
+
+      - name: List directory contents 2
+        run: |
+          dir
+          Get-ChildItem -Path . -Recurse
+        shell: powershell
 
       - name: Upload Release Asset (Windows)
         uses: actions/upload-release-asset@v1
