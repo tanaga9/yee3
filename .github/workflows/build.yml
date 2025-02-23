@@ -50,7 +50,7 @@ jobs:
           name: macOS-app
           path: dist/
 
-  release:
+  pre_release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: macos-latest
@@ -94,27 +94,11 @@ jobs:
           zip "Yee_3-${VERSION_TAG}_macOS.zip" "Yee 3-${VERSION_TAG}.dmg"
         shell: bash
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload macOS ZIP artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          body: Automated macOS release for version ${{ github.ref_name }}.
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./Yee_3-${{ env.VERSION_TAG }}_macOS.zip
-          asset_name: Yee_3-${{ env.VERSION_TAG }}_macOS.zip
-          asset_content_type: application/zip
+          name: macos-zip
+          path: Yee_3-${{ env.VERSION_TAG }}_macOS.zip
 
   build_windows:
     runs-on: windows-latest
@@ -160,7 +144,7 @@ jobs:
           name: windows-app
           path: dist/
 
-  release_windows:
+  pre_release_windows:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build_windows
     runs-on: windows-latest
@@ -204,30 +188,69 @@ jobs:
         run: |
           Compress-Archive -Path "Yee 3-$env:VERSION_TAG.msi" -DestinationPath "Yee_3-$($env:VERSION_TAG)_windows.zip"
 
-      - name: Create GitHub Release (Windows)
-        id: create_release_windows
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          body: Automated Windows release for version ${{ github.ref_name }}.
-          draft: false
-          prerelease: false
-
       - name: List directory contents 2
         run: |
           dir
           Get-ChildItem -Path . -Recurse
         shell: powershell
 
-      - name: Upload Release Asset (Windows)
+      - name: Upload Windows ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: Yee_3-$($env:VERSION_TAG)_windows.zip
+
+  release:
+    needs: [pre_release, pre_release_windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS ZIP artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-zip
+          path: .
+
+      - name: Download Windows ZIP artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: .
+
+      - name: Extract version from Git tag
+        run: echo "VERSION_TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: Automated release for version ${{ github.ref_name }}.
+          draft: false
+          prerelease: false
+
+      - name: Upload macOS artifact to release
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release_windows.outputs.upload_url }}
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./Yee_3-${{ env.VERSION_TAG }}_macOS.zip
+          asset_name: Yee_3-${{ env.VERSION_TAG }}_macOS.zip
+          asset_content_type: application/zip
+
+      - name: Upload Windows artifact to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ./Yee_3-${{ env.VERSION_TAG }}_windows.zip
           asset_name: Yee_3-${{ env.VERSION_TAG }}_windows.zip
           asset_content_type: application/zip
