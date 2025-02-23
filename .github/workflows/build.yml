@@ -202,6 +202,7 @@ jobs:
       - name: Compress built app into ZIP
         shell: powershell
         run: |
+          Get-ChildItem -Path "dist" -Recurse
           Compress-Archive -Path "dist\Yee 3-$env:VERSION_TAG.msi" -DestinationPath "Yee_3-$env:VERSION_TAG_windows.zip"
 
       - name: Create GitHub Release (Windows)
