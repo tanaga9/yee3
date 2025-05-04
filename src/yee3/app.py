@@ -794,6 +794,15 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = False
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
+        # Polling fallback for network shares (e.g., Samba) to detect renames
+        self._watched_folder = None
+        self._last_dir_snapshot = None
+        self._directory_poll_timer = QTimer(self)
+        self._directory_poll_timer.timeout.connect(self._poll_directory_changes)
+        self._empty_poll_count = 0
+        self._empty_poll_threshold = (
+            30  # number of consecutive empty polls before stopping
+        )
         # Flag to avoid scheduling multiple reload timers
         self._reload_timer_pending = False
         self.selected_file_path = None
@@ -1047,6 +1056,13 @@ class ImageViewer(QMainWindow):
             return
             # raise ValueError("The specified path is neither a file nor a directory.")
 
+        # Update watched folder and initialize snapshot
+        self._watched_folder = folderPath
+        try:
+            self._last_dir_snapshot = set(os.listdir(folderPath))
+        except Exception:
+            self._last_dir_snapshot = set()
+
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
 
@@ -1102,11 +1118,17 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = False
         if self.currentPath:
             self.watcher.addPath(os.path.dirname(self.currentPath))
+            # Start polling after the folder scan is complete
+            if not self._directory_poll_timer.isActive():
+                self._empty_poll_count = 0
+                self._directory_poll_timer.start(2000)  # poll every 2 seconds
         # If a reload was requested during loading, schedule it 1s after load completes
         if self._reload_timer_pending:
+
             def _delayed_reload():
                 self.reloadCurrentFolder()
                 self._reload_timer_pending = False
+
             QTimer.singleShot(1000, _delayed_reload)
 
     def on_directory_changed(self, path):
@@ -1117,7 +1139,37 @@ class ImageViewer(QMainWindow):
                 self._reload_timer_pending = True
             return
         # No ongoing loading or pending reload: reload immediately
+        if not self._directory_poll_timer.isActive():
+            self._empty_poll_count = 0
+            self._directory_poll_timer.start(2000)  # poll every 2 seconds
         self.reloadCurrentFolder()
+
+    def _poll_directory_changes(self):
+        """Poll directory entries to detect renames on network shares."""
+        # self.statusBar().showMessage("checking", 1000)
+        folder = self._watched_folder
+        if not folder:
+            return
+        try:
+            current = set(os.listdir(folder))
+        except Exception:
+            return
+        if self._last_dir_snapshot is None:
+            self._last_dir_snapshot = current
+            return
+        added = current - self._last_dir_snapshot
+        removed = self._last_dir_snapshot - current
+        if added or removed:
+            # Trigger handler for directory change
+            self.on_directory_changed(folder)
+            self._empty_poll_count = 0
+        else:
+            self._empty_poll_count += 1
+            if self._empty_poll_count >= self._empty_poll_threshold:
+                self._directory_poll_timer.stop()
+                self._empty_poll_count = 0
+                self.statusBar().showMessage("Polling stopped", 1000)
+        self._last_dir_snapshot = current
 
     def loadImageFromFile(self, imageData: ImageData):
         """
