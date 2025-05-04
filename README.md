@@ -24,10 +24,12 @@ How to build an app on your local Mac
     - `pip3 install pdm`
     - `pdm install --dev`  *(Run again if `pyproject.toml` or `pdm.lock` changes.)*
 - **Build**
-    - `iconutil -c icns src/yee3/resources/yee3.iconset`
-    - `pdm run briefcase build macOS`
-    - `cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.`
 
+```sh
+iconutil -c icns src/yee3/resources/yee3.iconset
+pdm run briefcase build macOS
+cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.
+```
 
 Used via Automator (without build)
 ----------------------------------

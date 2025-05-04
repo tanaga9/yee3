@@ -794,6 +794,8 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = False
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
+        # Flag to avoid scheduling multiple reload timers
+        self._reload_timer_pending = False
         self.selected_file_path = None
 
         self.counter = RecentCounter()
@@ -1100,8 +1102,21 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = False
         if self.currentPath:
             self.watcher.addPath(os.path.dirname(self.currentPath))
+        # If a reload was requested during loading, schedule it 1s after load completes
+        if self._reload_timer_pending:
+            def _delayed_reload():
+                self.reloadCurrentFolder()
+                self._reload_timer_pending = False
+            QTimer.singleShot(1000, _delayed_reload)
 
     def on_directory_changed(self, path):
+        # Ignore if a reload is already pending or loader still running
+        if self._reload_timer_pending or self.lazyLoadingInProgress:
+            # If loader still running and no reload pending, mark pending
+            if self.lazyLoadingInProgress and not self._reload_timer_pending:
+                self._reload_timer_pending = True
+            return
+        # No ongoing loading or pending reload: reload immediately
         self.reloadCurrentFolder()
 
     def loadImageFromFile(self, imageData: ImageData):
