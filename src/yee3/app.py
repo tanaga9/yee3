@@ -1065,6 +1065,7 @@ class ImageViewer(QMainWindow):
 
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
+        self._directory_poll_timer.stop()
 
         if not (
             self.currentPath
