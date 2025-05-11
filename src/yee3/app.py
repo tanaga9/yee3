@@ -626,6 +626,7 @@ class ImageLoaderWorker(QThread):
         self.folder = unicodedata.normalize("NFD", folder)
         self.pseudo_random_seed = pseudo_random_seed
         self.filePath = os.path.abspath(filePath) if filePath is not None else None
+        self.batch_count_threshold = 10
 
     def run(self):
         imageExtensions = supportedImageFormats()
@@ -641,14 +642,15 @@ class ImageLoaderWorker(QThread):
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
 
         def compute_batch_count(x):
+            min = 10
             if x <= 0:
-                return 1
+                return min
             y = 10 * x**-1.16
-            if y <= 1:
-                return 1
+            if y <= min:
+                return min
             return math.ceil(y)
 
-        batch_count_threshold = 10
+        self.batch_count_threshold = 10
         data = []
         last_emit_timestamp = datetime.now()
         timer = IterationTimer()
@@ -666,9 +668,9 @@ class ImageLoaderWorker(QThread):
                 now = datetime.now()
                 timer.stop()
                 if (avg := timer.average_time()) is not None:
-                    batch_count_threshold = compute_batch_count(avg * 1000)
+                    self.batch_count_threshold = compute_batch_count(avg * 1000)
                 if (
-                    len(data) >= batch_count_threshold
+                    len(data) >= self.batch_count_threshold
                     or (now - last_emit_timestamp).total_seconds() > 0.25
                 ):
                     if len(data) > 0:
@@ -1040,7 +1042,7 @@ class ImageViewer(QMainWindow):
         self.count_label.setFont(font)
 
         self.label = QLabel("count: ")
-        self.label.setFixedWidth(150)
+        self.label.setFixedWidth(200)
         self.label.setFont(font)
 
     def createToolbar(self):
@@ -1177,7 +1179,9 @@ class ImageViewer(QMainWindow):
         self.selected_file_path = None
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
-        self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
+        self.label.setText(
+            f"count: {len(self.mtimeOrderSet)} ... ({self.imageLoader.batch_count_threshold})"
+        )
 
     def finishLoadingImages(self):
         """ """
