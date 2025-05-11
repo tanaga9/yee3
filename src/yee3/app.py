@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 import time
 from collections import deque
+import math
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -201,6 +202,31 @@ class RecentCounter:
             self.times.popleft()
 
         return len(self.times)
+
+
+class IterationTimer:
+    def __init__(self):
+        self.start_time = None
+        self.total_time = 0
+        self.count = 0
+        self.recent_len = 100
+        self.recent_times = deque(maxlen=self.recent_len)
+
+    def start(self):
+        self.start_time = time.perf_counter()
+
+    def stop(self):
+        if self.start_time is not None:
+            elapsed = time.perf_counter() - self.start_time
+            self.total_time += elapsed
+            self.recent_times.append(elapsed)
+            self.count += 1
+            self.start_time = None
+
+    def average_time(self):
+        if len(self.recent_times) < self.recent_len:
+            return None
+        return sum(self.recent_times) / self.recent_len
 
 
 class SortedList:
@@ -613,10 +639,23 @@ class ImageLoaderWorker(QThread):
                 if imagefile.stat():
                     imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
+
+        def compute_batch_count(x):
+            if x <= 0:
+                return 1
+            y = 10 * x**-1.16
+            if y <= 1:
+                return 1
+            return math.ceil(y)
+
+        batch_count_threshold = 10
         data = []
         last_emit_timestamp = datetime.now()
+        timer = IterationTimer()
         try:
+            timer.start()
             for entry in os.scandir(self.folder):
+                # Never use ‘continue’; msleep must run at regular intervals
                 imagefile = ImageFile(entry=entry)
                 if is_supported_image_format(imagefile.name):
                     if imagefile.stat():
@@ -625,19 +664,26 @@ class ImageLoaderWorker(QThread):
                         )
                         data.append(asdict(imageData))
                 now = datetime.now()
+                timer.stop()
+                if (avg := timer.average_time()) is not None:
+                    batch_count_threshold = compute_batch_count(avg * 1000)
                 if (
-                    len(data) >= 100
+                    len(data) >= batch_count_threshold
                     or (now - last_emit_timestamp).total_seconds() > 0.25
                 ):
                     if len(data) > 0:
+                        # handleNewImage
                         self.imageLoaded.emit(json.dumps(data))
                         data = []
                     self.msleep(10)
                     last_emit_timestamp = now
+                timer.start()
             if len(data) > 0:
+                # handleNewImage
                 self.imageLoaded.emit(json.dumps(data))
         except Exception as e:
             print("Error during folder scanning:", e)
+        # finishLoadingImages
         self.finishedLoading.emit()
 
 
@@ -979,6 +1025,13 @@ class ImageViewer(QMainWindow):
         self.freeScroll.setCheckable(True)
         self.freeScroll.setChecked(False)
 
+        # --- Add Poll toggle toolbutton ---
+        self.pollToggle = QToolButton()
+        self.pollToggle.setText("Poll")
+        self.pollToggle.setCheckable(True)
+        self.pollToggle.setChecked(False)
+        self.pollToggle.toggled.connect(self.handlePollToggled)
+
         font = QFont("Courier New")
         font.setStyleHint(QFont.Monospace)
 
@@ -1005,6 +1058,7 @@ class ImageViewer(QMainWindow):
         toolbar.addWidget(self.HScroll)
         toolbar.addWidget(self.loopScroll)
         toolbar.addWidget(self.freeScroll)
+        toolbar.addWidget(self.pollToggle)
 
         count_label_action = QWidgetAction(toolbar)
         count_label_action.setDefaultWidget(self.count_label)
@@ -1013,6 +1067,17 @@ class ImageViewer(QMainWindow):
         label_action = QWidgetAction(toolbar)
         label_action.setDefaultWidget(self.label)
         toolbar.addAction(label_action)
+
+    def handlePollToggled(self, checked):
+        """Start or stop the directory polling timer based on the toggle state."""
+        if checked:
+            # Resume polling at 2-second intervals
+            if not self._directory_poll_timer.isActive():
+                self._directory_poll_timer.start(2000)
+        else:
+            # Stop polling if currently active
+            if self._directory_poll_timer.isActive():
+                self._directory_poll_timer.stop()
 
     def openFolder(self):
         """
@@ -1059,7 +1124,10 @@ class ImageViewer(QMainWindow):
         # Update watched folder and initialize snapshot
         self._watched_folder = folderPath
         try:
-            self._last_dir_snapshot = set(os.listdir(folderPath))
+            if self.pollToggle.isChecked():
+                self._last_dir_snapshot = set(os.listdir(folderPath))
+            else:
+                self._last_dir_snapshot = set()
         except Exception:
             self._last_dir_snapshot = set()
 
@@ -1120,7 +1188,10 @@ class ImageViewer(QMainWindow):
         if self.currentPath:
             self.watcher.addPath(os.path.dirname(self.currentPath))
             # Start polling after the folder scan is complete
-            if not self._directory_poll_timer.isActive():
+            if (
+                not self._directory_poll_timer.isActive()
+                and self.pollToggle.isChecked()
+            ):
                 self._empty_poll_count = 0
                 self._directory_poll_timer.start(2000)  # poll every 2 seconds
         # If a reload was requested during loading, schedule it 1s after load completes
@@ -1140,7 +1211,7 @@ class ImageViewer(QMainWindow):
                 self._reload_timer_pending = True
             return
         # No ongoing loading or pending reload: reload immediately
-        if not self._directory_poll_timer.isActive():
+        if not self._directory_poll_timer.isActive() and self.pollToggle.isChecked():
             self._empty_poll_count = 0
             self._directory_poll_timer.start(2000)  # poll every 2 seconds
         self.reloadCurrentFolder()
