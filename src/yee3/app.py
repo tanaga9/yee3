@@ -1027,15 +1027,20 @@ class ImageViewer(QMainWindow):
         self.freeScroll.setCheckable(True)
         self.freeScroll.setChecked(False)
 
+        font = QFont("Courier New")
+        font.setStyleHint(QFont.Monospace)
+
+        # Watch status indicator
+        self.watchStatusLabel = QLabel("Watch: Off")
+        self.watchStatusLabel.setFixedWidth(80)
+        self.watchStatusLabel.setFont(font)
+
         # --- Add Poll toggle toolbutton ---
         self.pollToggle = QToolButton()
         self.pollToggle.setText("Poll")
         self.pollToggle.setCheckable(True)
         self.pollToggle.setChecked(False)
         self.pollToggle.toggled.connect(self.handlePollToggled)
-
-        font = QFont("Courier New")
-        font.setStyleHint(QFont.Monospace)
 
         self.count_label = QLabel("")
         self.count_label.setFixedWidth(68)
@@ -1060,6 +1065,7 @@ class ImageViewer(QMainWindow):
         toolbar.addWidget(self.HScroll)
         toolbar.addWidget(self.loopScroll)
         toolbar.addWidget(self.freeScroll)
+        toolbar.addWidget(self.watchStatusLabel)
         toolbar.addWidget(self.pollToggle)
 
         count_label_action = QWidgetAction(toolbar)
@@ -1103,6 +1109,8 @@ class ImageViewer(QMainWindow):
 
         :param path: The path to the folder or file to load images from.
         """
+        # Set the scan start time
+        self._scan_start_time = time.time()
 
         if self.lazyLoadingInProgress:
             return
@@ -1135,6 +1143,7 @@ class ImageViewer(QMainWindow):
 
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
+        self.watchStatusLabel.setText(f"Watch: Off")
         self._directory_poll_timer.stop()
 
         if not (
@@ -1185,12 +1194,17 @@ class ImageViewer(QMainWindow):
 
     def finishLoadingImages(self):
         """ """
+        elapsed_time = time.time() - self._scan_start_time
+        count = len(self.mtimeOrderSet)
+
         self.statusBar().showMessage("Complete", 3000)
-        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+        self.label.setText(f"count: {count}")
 
         self.lazyLoadingInProgress = False
         if self.currentPath:
-            self.watcher.addPath(os.path.dirname(self.currentPath))
+            if count / elapsed_time > 1000:
+                self.watcher.addPath(os.path.dirname(self.currentPath))
+                self.watchStatusLabel.setText(f"Watch: On")
             # Start polling after the folder scan is complete
             if (
                 not self._directory_poll_timer.isActive()
@@ -1229,6 +1243,7 @@ class ImageViewer(QMainWindow):
         try:
             current = set(os.listdir(folder))
         except Exception:
+            self._last_dir_snapshot = set()
             return
         if self._last_dir_snapshot is None:
             self._last_dir_snapshot = current
