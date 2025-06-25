@@ -1202,7 +1202,7 @@ class ImageViewer(QMainWindow):
 
         self.lazyLoadingInProgress = False
         if self.currentPath:
-            if count / elapsed_time > 1000:
+            if count < 100 or count / elapsed_time > 1000:
                 self.watcher.addPath(os.path.dirname(self.currentPath))
                 self.watchStatusLabel.setText(f"Watch: On")
             # Start polling after the folder scan is complete
