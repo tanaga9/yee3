@@ -1031,7 +1031,7 @@ class ImageViewer(QMainWindow):
         font.setStyleHint(QFont.Monospace)
 
         # Watch status indicator
-        self.watchStatusLabel = QLabel("Watch: Off")
+        self.watchStatusLabel = QLabel("Watch: --")
         self.watchStatusLabel.setFixedWidth(80)
         self.watchStatusLabel.setFont(font)
 
@@ -1076,6 +1076,20 @@ class ImageViewer(QMainWindow):
         label_action.setDefaultWidget(self.label)
         toolbar.addAction(label_action)
 
+    def updateWatchStatusLabel(self):
+        """Update the watchStatusLabel to reflect Watch/Polling status."""
+        watch_on = any(self.watcher.directories())
+        poll_on = self._directory_poll_timer.isActive()
+        if watch_on and poll_on:
+            status = "wp"
+        elif watch_on:
+            status = "w-"
+        elif poll_on:
+            status = "-p"
+        else:
+            status = "--"
+        self.watchStatusLabel.setText(f"Watch: {status}")
+
     def handlePollToggled(self, checked):
         """Start or stop the directory polling timer based on the toggle state."""
         if checked:
@@ -1086,6 +1100,7 @@ class ImageViewer(QMainWindow):
             # Stop polling if currently active
             if self._directory_poll_timer.isActive():
                 self._directory_poll_timer.stop()
+        self.updateWatchStatusLabel()
 
     def openFolder(self):
         """
@@ -1143,8 +1158,8 @@ class ImageViewer(QMainWindow):
 
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
-        self.watchStatusLabel.setText(f"Watch: Off")
         self._directory_poll_timer.stop()
+        self.updateWatchStatusLabel()
 
         if not (
             self.currentPath
@@ -1204,7 +1219,6 @@ class ImageViewer(QMainWindow):
         if self.currentPath:
             if count < 100 or count / elapsed_time > 1000:
                 self.watcher.addPath(os.path.dirname(self.currentPath))
-                self.watchStatusLabel.setText(f"Watch: On")
             # Start polling after the folder scan is complete
             if (
                 not self._directory_poll_timer.isActive()
@@ -1212,6 +1226,8 @@ class ImageViewer(QMainWindow):
             ):
                 self._empty_poll_count = 0
                 self._directory_poll_timer.start(2000)  # poll every 2 seconds
+            self.updateWatchStatusLabel()
+
         # If a reload was requested during loading, schedule it 1s after load completes
         if self._reload_timer_pending:
 
@@ -1232,6 +1248,7 @@ class ImageViewer(QMainWindow):
         if not self._directory_poll_timer.isActive() and self.pollToggle.isChecked():
             self._empty_poll_count = 0
             self._directory_poll_timer.start(2000)  # poll every 2 seconds
+        self.updateWatchStatusLabel()
         self.reloadCurrentFolder()
 
     def _poll_directory_changes(self):
@@ -1259,6 +1276,7 @@ class ImageViewer(QMainWindow):
             if self._empty_poll_count >= self._empty_poll_threshold:
                 self._directory_poll_timer.stop()
                 self._empty_poll_count = 0
+                self.updateWatchStatusLabel()
                 self.statusBar().showMessage("Polling stopped", 1000)
         self._last_dir_snapshot = current
 
