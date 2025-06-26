@@ -161,9 +161,9 @@ def supportedImageFormats():
     return imageExtensions + list(image_format_extractors.keys())
 
 
-def copy_with_unique_name(src, dst_dir):
+def transfer_with_unique_name(src, dst_dir, move=False):
     """
-    Copies a file to the specified directory.
+    Transfer a file to the specified directory.
     If a file with the same name already exists, it renames the new file to avoid overwriting.
 
     :param src: Source file path
@@ -184,7 +184,8 @@ def copy_with_unique_name(src, dst_dir):
         dst_path = os.path.join(dst_dir, f"{name}-{counter}{ext}")
         counter += 1
 
-    shutil.copy2(src, dst_path)
+    transfer_function = shutil.move if move else shutil.copy2
+    transfer_function(src, dst_path)
     return dst_path
 
 
@@ -729,7 +730,8 @@ class ImageViewer(QMainWindow):
             pass
 
         # Load window settings (size, position, and copy destinations) from configuration file.
-        self.copyDestinations = {}  # Mapping for keys 1..9 to destination folders.
+        self.copyDestinations = {}  # Mapping for keys 1..9 to copy destination folders.
+        self.moveDestinations = {}  # Mapping for keys 1..9 to move destination folders.
         self.loadSettings()
         if self.size().isEmpty():
             self.resize(800, 600)
@@ -777,6 +779,18 @@ class ImageViewer(QMainWindow):
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
         )
 
+        # Create a dock widget for move destinations.
+        self.moveDock = QDockWidget("Move Destinations", self)
+        self.moveList = QListWidget()
+        self.moveDock.setWidget(self.moveList)
+        self.moveDock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.moveDock)
+        self.moveList.itemDoubleClicked.connect(self.onMoveListDoubleClicked)
+        self.updateMoveList()
+        self.moveDock.visibilityChanged.connect(
+            lambda visible: QTimer.singleShot(0, self.adjustImageScale)
+        )
+
         # Create the menu bar and add the "File" menu with several actions.
         self.createMenus()
 
@@ -815,6 +829,13 @@ class ImageViewer(QMainWindow):
             sc = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             sc.activated.connect(lambda i=i: self.copyToDestination(i))
             self.copyShortcuts[i] = sc
+
+        # Create keyboard shortcuts for moving with Ctrl+Shift+1 ... Ctrl+Shift+9.
+        self.moveShortcuts = {}
+        for i in range(1, 10):
+            sc = QShortcut(QKeySequence(f"Shift+{i}"), self)
+            sc.activated.connect(lambda i=i: self.moveToDestination(i))
+            self.moveShortcuts[i] = sc
 
         # Variables for dragging
         self.dragging = False
@@ -899,6 +920,10 @@ class ImageViewer(QMainWindow):
         copyToAction.triggered.connect(self.showCopyDock)
         fileMenu.addAction(copyToAction)
 
+        moveToAction = QAction("Move to ...", self)
+        moveToAction.triggered.connect(self.showMoveDock)
+        fileMenu.addAction(moveToAction)
+
     def openFile(self):
         """
         Open a file dialog to select an image file, load its folder,
@@ -929,6 +954,10 @@ class ImageViewer(QMainWindow):
         Show the copy destination dock widget.
         """
         self.copyDock.show()
+
+    def showMoveDock(self):
+        """Show the move destination dock widget."""
+        self.moveDock.show()
 
     def get_order_name(self, order):
         """Return the order type as a string based on the list object"""
@@ -998,6 +1027,9 @@ class ImageViewer(QMainWindow):
         # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
         self.copyToAct.triggered.connect(self.showCopyDock)
 
+        self.moveToAct = QAction("Move to ...", self)
+        self.moveToAct.triggered.connect(self.showMoveDock)
+
         # self.zoomInAct = QAction("Zoom In", self)
         # self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
         # self.zoomInAct.triggered.connect(self.zoomIn)
@@ -1058,6 +1090,7 @@ class ImageViewer(QMainWindow):
         self.addToolBar(toolbar)
         toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
+        toolbar.addAction(self.moveToAct)
         # toolbar.addAction(self.zoomInAct)
         # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
@@ -1351,12 +1384,13 @@ class ImageViewer(QMainWindow):
                 index = self.verticalOrderSet.index(currentPath)
                 indexNext = (index + 1) % len(self.verticalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext < index:
-                    return
+                    return False
                 newCurrentPath = self.verticalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     def verticalNextImage(self):
         """
@@ -1368,12 +1402,13 @@ class ImageViewer(QMainWindow):
                 index = self.verticalOrderSet.index(currentPath)
                 indexNext = (index - 1) % len(self.verticalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext > index:
-                    return
+                    return False
                 newCurrentPath = self.verticalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -1386,12 +1421,13 @@ class ImageViewer(QMainWindow):
                 index = self.horizontalOrderSet.index(currentPath)
                 indexNext = (index + 1) % len(self.horizontalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext < index:
-                    return
+                    return False
                 newCurrentPath = self.horizontalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     def horizontalPreviousImage(self):
         """
@@ -1403,12 +1439,13 @@ class ImageViewer(QMainWindow):
                 index = self.horizontalOrderSet.index(currentPath)
                 indexNext = (index - 1) % len(self.horizontalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext > index:
-                    return
+                    return False
                 newCurrentPath = self.horizontalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     def keyPressEvent(self, event):
         """
@@ -1657,10 +1694,15 @@ class ImageViewer(QMainWindow):
                     self.copyDestinations = config["copy_destinations"]
                 else:
                     self.copyDestinations = {}
+                if "move_destinations" in config:
+                    self.moveDestinations = config["move_destinations"]
+                else:
+                    self.moveDestinations = {}
             except Exception as e:
                 print("Error loading settings:", e)
         else:
             self.copyDestinations = {}
+            self.moveDestinations = {}
 
     def saveSettings(self):
         """
@@ -1672,6 +1714,7 @@ class ImageViewer(QMainWindow):
             "window_x": self.x(),
             "window_y": self.y(),
             "copy_destinations": self.copyDestinations,
+            "move_destinations": self.moveDestinations,
         }
         config_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "yee3_config.json"
@@ -1695,15 +1738,30 @@ class ImageViewer(QMainWindow):
                 text = f"Cmd+{i}: (not set)"
             self.copyList.addItem(text)
 
-    def copyToDestination(self, index):
+    def updateMoveList(self):
+        """Update the move destination list in the dock widget."""
+        self.moveList.clear()
+        for i in range(1, 10):
+            dest = self.moveDestinations.get(str(i)) or self.moveDestinations.get(i)
+            if dest:
+                text = f"Shift+{i}: {dest}"
+            else:
+                text = f"Shift+{i}: (not set)"
+            self.moveList.addItem(text)
+
+    def transferToDestination(self, index, move=False):
         """
-        Copy the current image file to the destination folder associated with the given index.
+        Transfer the current image file to the destination folder associated with the given index.
         If no destination is set for that index, prompt the user to select one.
 
-        :param index: The index (1-9) corresponding to the copy destination.
+        :param index: The index (1-9) corresponding to the Transfer destination.
         """
-        print(f"copyToDestination called with index: {index}")  # Debug output.
-        dest = self.copyDestinations.get(str(index)) or self.copyDestinations.get(index)
+        print(f"transferToDestination called with index: {index}")  # Debug output.
+        label = "Move" if move else "Copy"
+        label_result = "Moved" if move else "Copied"
+        destinations = self.moveDestinations if move else self.copyDestinations
+        transfer_function = shutil.move if move else shutil.copy2
+        dest = destinations.get(str(index)) or destinations.get(index)
         if not dest:
             folder = QFileDialog.getExistingDirectory(
                 self, f"Select destination for Cmd+{index}"
@@ -1712,8 +1770,11 @@ class ImageViewer(QMainWindow):
                 print("No destination selected.")
                 return
             dest = folder
-            self.copyDestinations[str(index)] = dest
-            self.updateCopyList()
+            destinations[str(index)] = dest
+            if move:
+                self.updateMoveList()
+            else:
+                self.updateCopyList()
 
         if self.currentPath:
             fileName = os.path.basename(self.currentPath)
@@ -1734,34 +1795,50 @@ class ImageViewer(QMainWindow):
                 result = dialog.exec()
 
                 if result == ReplaceDialogResult.REPLACE:
-                    # Replace copy
+                    # Replace Transfer
                     try:
-                        shutil.copy2(self.currentPath, targetPath)
+                        transfer_function(self.currentPath, targetPath)
                         self.statusBar().showMessage(f"Replaced file at {dest}", 3000)
                     except Exception as e:
-                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                        self.statusBar().showMessage(f"{label} failed: {e}", 3000)
                 elif result == ReplaceDialogResult.RENAME:
-                    # Copy with a new name
+                    # Transfer with a new name
                     try:
-                        copy_with_unique_name(self.currentPath, dest)
+                        transfer_with_unique_name(self.currentPath, dest, move)
                         self.statusBar().showMessage(
-                            f"Copied to {dest} with a new name", 3000
+                            f"{label_result} to {dest} with a new name", 3000
                         )
                     except Exception as e:
-                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                        self.statusBar().showMessage(f"{label} failed: {e}", 3000)
                 elif result == ReplaceDialogResult.CANCEL:
                     # Cancel
-                    self.statusBar().showMessage("Copy canceled", 3000)
+                    self.statusBar().showMessage("{label} canceled", 3000)
                     return
             else:
-                # If there is no file with the same name, perform a normal copy
+                # If there is no file with the same name, perform a normal copy or move
                 try:
-                    shutil.copy2(self.currentPath, targetPath)
-                    self.statusBar().showMessage(f"Copied to {dest}", 3000)
+                    transfer_function(self.currentPath, targetPath)
+                    self.statusBar().showMessage(f"{label_result} to {dest}", 3000)
                 except Exception as e:
-                    self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                    self.statusBar().showMessage(f"{label} failed: {e}", 3000)
         else:
             print("No current file available.")
+
+    def copyToDestination(self, index):
+        """
+        Copy the current image file to the move destination folder for the given index.
+        """
+        return self.transferToDestination(index, move=False)
+
+    def moveToDestination(self, index):
+        """
+        Move the current image file to the move destination folder for the given index.
+        """
+        result = self.transferToDestination(index, move=True)
+        # Automatically show the next image after moving
+        if self.verticalNextImage() is False:
+            self.verticalPreviousImage()
+        return result
 
     def onCopyListDoubleClicked(self, item):
         """
@@ -1771,6 +1848,11 @@ class ImageViewer(QMainWindow):
         row = self.copyList.row(item)
         index = row + 1
         self.copyToDestination(index)
+
+    def onMoveListDoubleClicked(self, item):
+        """Handle double-click on move list."""
+        index = self.moveList.row(item) + 1
+        self.moveToDestination(index)
 
     def eventFilter(self, obj, event):
         """
