@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 import time
 from collections import deque
+import math
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -160,9 +161,9 @@ def supportedImageFormats():
     return imageExtensions + list(image_format_extractors.keys())
 
 
-def copy_with_unique_name(src, dst_dir):
+def transfer_with_unique_name(src, dst_dir, move=False):
     """
-    Copies a file to the specified directory.
+    Transfer a file to the specified directory.
     If a file with the same name already exists, it renames the new file to avoid overwriting.
 
     :param src: Source file path
@@ -183,7 +184,8 @@ def copy_with_unique_name(src, dst_dir):
         dst_path = os.path.join(dst_dir, f"{name}-{counter}{ext}")
         counter += 1
 
-    shutil.copy2(src, dst_path)
+    transfer_function = shutil.move if move else shutil.copy2
+    transfer_function(src, dst_path)
     return dst_path
 
 
@@ -201,6 +203,31 @@ class RecentCounter:
             self.times.popleft()
 
         return len(self.times)
+
+
+class IterationTimer:
+    def __init__(self):
+        self.start_time = None
+        self.total_time = 0
+        self.count = 0
+        self.recent_len = 100
+        self.recent_times = deque(maxlen=self.recent_len)
+
+    def start(self):
+        self.start_time = time.perf_counter()
+
+    def stop(self):
+        if self.start_time is not None:
+            elapsed = time.perf_counter() - self.start_time
+            self.total_time += elapsed
+            self.recent_times.append(elapsed)
+            self.count += 1
+            self.start_time = None
+
+    def average_time(self):
+        if len(self.recent_times) < self.recent_len:
+            return None
+        return sum(self.recent_times) / self.recent_len
 
 
 class SortedList:
@@ -600,6 +627,7 @@ class ImageLoaderWorker(QThread):
         self.folder = unicodedata.normalize("NFD", folder)
         self.pseudo_random_seed = pseudo_random_seed
         self.filePath = os.path.abspath(filePath) if filePath is not None else None
+        self.batch_count_threshold = 10
 
     def run(self):
         imageExtensions = supportedImageFormats()
@@ -613,10 +641,24 @@ class ImageLoaderWorker(QThread):
                 if imagefile.stat():
                     imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
                     self.imageLoaded.emit(json.dumps([asdict(imageData)]))
+
+        def compute_batch_count(x):
+            min = 10
+            if x <= 0:
+                return min
+            y = 10 * x**-1.16
+            if y <= min:
+                return min
+            return math.ceil(y)
+
+        self.batch_count_threshold = 10
         data = []
         last_emit_timestamp = datetime.now()
+        timer = IterationTimer()
         try:
+            timer.start()
             for entry in os.scandir(self.folder):
+                # Never use ‘continue’; msleep must run at regular intervals
                 imagefile = ImageFile(entry=entry)
                 if is_supported_image_format(imagefile.name):
                     if imagefile.stat():
@@ -625,19 +667,26 @@ class ImageLoaderWorker(QThread):
                         )
                         data.append(asdict(imageData))
                 now = datetime.now()
+                timer.stop()
+                if (avg := timer.average_time()) is not None:
+                    self.batch_count_threshold = compute_batch_count(avg * 1000)
                 if (
-                    len(data) >= 100
+                    len(data) >= self.batch_count_threshold
                     or (now - last_emit_timestamp).total_seconds() > 0.25
                 ):
                     if len(data) > 0:
+                        # handleNewImage
                         self.imageLoaded.emit(json.dumps(data))
                         data = []
                     self.msleep(10)
                     last_emit_timestamp = now
+                timer.start()
             if len(data) > 0:
+                # handleNewImage
                 self.imageLoaded.emit(json.dumps(data))
         except Exception as e:
             print("Error during folder scanning:", e)
+        # finishLoadingImages
         self.finishedLoading.emit()
 
 
@@ -681,7 +730,8 @@ class ImageViewer(QMainWindow):
             pass
 
         # Load window settings (size, position, and copy destinations) from configuration file.
-        self.copyDestinations = {}  # Mapping for keys 1..9 to destination folders.
+        self.copyDestinations = {}  # Mapping for keys 1..9 to copy destination folders.
+        self.moveDestinations = {}  # Mapping for keys 1..9 to move destination folders.
         self.loadSettings()
         if self.size().isEmpty():
             self.resize(800, 600)
@@ -729,6 +779,18 @@ class ImageViewer(QMainWindow):
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
         )
 
+        # Create a dock widget for move destinations.
+        self.moveDock = QDockWidget("Move Destinations", self)
+        self.moveList = QListWidget()
+        self.moveDock.setWidget(self.moveList)
+        self.moveDock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.moveDock)
+        self.moveList.itemDoubleClicked.connect(self.onMoveListDoubleClicked)
+        self.updateMoveList()
+        self.moveDock.visibilityChanged.connect(
+            lambda visible: QTimer.singleShot(0, self.adjustImageScale)
+        )
+
         # Create the menu bar and add the "File" menu with several actions.
         self.createMenus()
 
@@ -768,6 +830,13 @@ class ImageViewer(QMainWindow):
             sc.activated.connect(lambda i=i: self.copyToDestination(i))
             self.copyShortcuts[i] = sc
 
+        # Create keyboard shortcuts for moving with Ctrl+Shift+1 ... Ctrl+Shift+9.
+        self.moveShortcuts = {}
+        for i in range(1, 10):
+            sc = QShortcut(QKeySequence(f"Shift+{i}"), self)
+            sc.activated.connect(lambda i=i: self.moveToDestination(i))
+            self.moveShortcuts[i] = sc
+
         # Variables for dragging
         self.dragging = False
         self.drag_start_position = QPoint()
@@ -794,6 +863,17 @@ class ImageViewer(QMainWindow):
         self.lazyLoadingInProgress = False
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
+        # Polling fallback for network shares (e.g., Samba) to detect renames
+        self._watched_folder = None
+        self._last_dir_snapshot = None
+        self._directory_poll_timer = QTimer(self)
+        self._directory_poll_timer.timeout.connect(self._poll_directory_changes)
+        self._empty_poll_count = 0
+        self._empty_poll_threshold = (
+            30  # number of consecutive empty polls before stopping
+        )
+        # Flag to avoid scheduling multiple reload timers
+        self._reload_timer_pending = False
         self.selected_file_path = None
 
         self.counter = RecentCounter()
@@ -840,6 +920,10 @@ class ImageViewer(QMainWindow):
         copyToAction.triggered.connect(self.showCopyDock)
         fileMenu.addAction(copyToAction)
 
+        moveToAction = QAction("Move to ...", self)
+        moveToAction.triggered.connect(self.showMoveDock)
+        fileMenu.addAction(moveToAction)
+
     def openFile(self):
         """
         Open a file dialog to select an image file, load its folder,
@@ -870,6 +954,10 @@ class ImageViewer(QMainWindow):
         Show the copy destination dock widget.
         """
         self.copyDock.show()
+
+    def showMoveDock(self):
+        """Show the move destination dock widget."""
+        self.moveDock.show()
 
     def get_order_name(self, order):
         """Return the order type as a string based on the list object"""
@@ -939,6 +1027,9 @@ class ImageViewer(QMainWindow):
         # self.copyToAct.setShortcut(QKeySequence("Meta+Ctrl+C"))
         self.copyToAct.triggered.connect(self.showCopyDock)
 
+        self.moveToAct = QAction("Move to ...", self)
+        self.moveToAct.triggered.connect(self.showMoveDock)
+
         # self.zoomInAct = QAction("Zoom In", self)
         # self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
         # self.zoomInAct.triggered.connect(self.zoomIn)
@@ -971,12 +1062,24 @@ class ImageViewer(QMainWindow):
         font = QFont("Courier New")
         font.setStyleHint(QFont.Monospace)
 
+        # Watch status indicator
+        self.watchStatusLabel = QLabel("Watch: --")
+        self.watchStatusLabel.setFixedWidth(80)
+        self.watchStatusLabel.setFont(font)
+
+        # --- Add Poll toggle toolbutton ---
+        self.pollToggle = QToolButton()
+        self.pollToggle.setText("Poll")
+        self.pollToggle.setCheckable(True)
+        self.pollToggle.setChecked(False)
+        self.pollToggle.toggled.connect(self.handlePollToggled)
+
         self.count_label = QLabel("")
         self.count_label.setFixedWidth(68)
         self.count_label.setFont(font)
 
         self.label = QLabel("count: ")
-        self.label.setFixedWidth(150)
+        self.label.setFixedWidth(200)
         self.label.setFont(font)
 
     def createToolbar(self):
@@ -987,6 +1090,7 @@ class ImageViewer(QMainWindow):
         self.addToolBar(toolbar)
         toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
+        toolbar.addAction(self.moveToAct)
         # toolbar.addAction(self.zoomInAct)
         # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
@@ -994,6 +1098,8 @@ class ImageViewer(QMainWindow):
         toolbar.addWidget(self.HScroll)
         toolbar.addWidget(self.loopScroll)
         toolbar.addWidget(self.freeScroll)
+        toolbar.addWidget(self.watchStatusLabel)
+        toolbar.addWidget(self.pollToggle)
 
         count_label_action = QWidgetAction(toolbar)
         count_label_action.setDefaultWidget(self.count_label)
@@ -1002,6 +1108,32 @@ class ImageViewer(QMainWindow):
         label_action = QWidgetAction(toolbar)
         label_action.setDefaultWidget(self.label)
         toolbar.addAction(label_action)
+
+    def updateWatchStatusLabel(self):
+        """Update the watchStatusLabel to reflect Watch/Polling status."""
+        watch_on = any(self.watcher.directories())
+        poll_on = self._directory_poll_timer.isActive()
+        if watch_on and poll_on:
+            status = "wp"
+        elif watch_on:
+            status = "w-"
+        elif poll_on:
+            status = "-p"
+        else:
+            status = "--"
+        self.watchStatusLabel.setText(f"Watch: {status}")
+
+    def handlePollToggled(self, checked):
+        """Start or stop the directory polling timer based on the toggle state."""
+        if checked:
+            # Resume polling at 2-second intervals
+            if not self._directory_poll_timer.isActive():
+                self._directory_poll_timer.start(2000)
+        else:
+            # Stop polling if currently active
+            if self._directory_poll_timer.isActive():
+                self._directory_poll_timer.stop()
+        self.updateWatchStatusLabel()
 
     def openFolder(self):
         """
@@ -1025,6 +1157,8 @@ class ImageViewer(QMainWindow):
 
         :param path: The path to the folder or file to load images from.
         """
+        # Set the scan start time
+        self._scan_start_time = time.time()
 
         if self.lazyLoadingInProgress:
             return
@@ -1045,8 +1179,20 @@ class ImageViewer(QMainWindow):
             return
             # raise ValueError("The specified path is neither a file nor a directory.")
 
+        # Update watched folder and initialize snapshot
+        self._watched_folder = folderPath
+        try:
+            if self.pollToggle.isChecked():
+                self._last_dir_snapshot = set(os.listdir(folderPath))
+            else:
+                self._last_dir_snapshot = set()
+        except Exception:
+            self._last_dir_snapshot = set()
+
         self.lazyLoadingInProgress = True
         self.watcher.removePaths(self.watcher.directories())
+        self._directory_poll_timer.stop()
+        self.updateWatchStatusLabel()
 
         if not (
             self.currentPath
@@ -1090,19 +1236,82 @@ class ImageViewer(QMainWindow):
         self.selected_file_path = None
 
         # self.statusBar().showMessage(f"Found file {imagePath}", 100)
-        self.label.setText(f"count: {len(self.mtimeOrderSet)} ...")
+        self.label.setText(
+            f"count: {len(self.mtimeOrderSet)} ... ({self.imageLoader.batch_count_threshold})"
+        )
 
     def finishLoadingImages(self):
         """ """
+        elapsed_time = time.time() - self._scan_start_time
+        count = len(self.mtimeOrderSet)
+
         self.statusBar().showMessage("Complete", 3000)
-        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+        self.label.setText(f"count: {count}")
 
         self.lazyLoadingInProgress = False
         if self.currentPath:
-            self.watcher.addPath(os.path.dirname(self.currentPath))
+            if count < 100 or count / elapsed_time > 1000:
+                self.watcher.addPath(os.path.dirname(self.currentPath))
+            # Start polling after the folder scan is complete
+            if (
+                not self._directory_poll_timer.isActive()
+                and self.pollToggle.isChecked()
+            ):
+                self._empty_poll_count = 0
+                self._directory_poll_timer.start(2000)  # poll every 2 seconds
+            self.updateWatchStatusLabel()
+
+        # If a reload was requested during loading, schedule it 1s after load completes
+        if self._reload_timer_pending:
+
+            def _delayed_reload():
+                self.reloadCurrentFolder()
+                self._reload_timer_pending = False
+
+            QTimer.singleShot(1000, _delayed_reload)
 
     def on_directory_changed(self, path):
+        # Ignore if a reload is already pending or loader still running
+        if self._reload_timer_pending or self.lazyLoadingInProgress:
+            # If loader still running and no reload pending, mark pending
+            if self.lazyLoadingInProgress and not self._reload_timer_pending:
+                self._reload_timer_pending = True
+            return
+        # No ongoing loading or pending reload: reload immediately
+        if not self._directory_poll_timer.isActive() and self.pollToggle.isChecked():
+            self._empty_poll_count = 0
+            self._directory_poll_timer.start(2000)  # poll every 2 seconds
+        self.updateWatchStatusLabel()
         self.reloadCurrentFolder()
+
+    def _poll_directory_changes(self):
+        """Poll directory entries to detect renames on network shares."""
+        # self.statusBar().showMessage("checking", 1000)
+        folder = self._watched_folder
+        if not folder:
+            return
+        try:
+            current = set(os.listdir(folder))
+        except Exception:
+            self._last_dir_snapshot = set()
+            return
+        if self._last_dir_snapshot is None:
+            self._last_dir_snapshot = current
+            return
+        added = current - self._last_dir_snapshot
+        removed = self._last_dir_snapshot - current
+        if added or removed:
+            # Trigger handler for directory change
+            self.on_directory_changed(folder)
+            self._empty_poll_count = 0
+        else:
+            self._empty_poll_count += 1
+            if self._empty_poll_count >= self._empty_poll_threshold:
+                self._directory_poll_timer.stop()
+                self._empty_poll_count = 0
+                self.updateWatchStatusLabel()
+                self.statusBar().showMessage("Polling stopped", 1000)
+        self._last_dir_snapshot = current
 
     def loadImageFromFile(self, imageData: ImageData):
         """
@@ -1175,12 +1384,13 @@ class ImageViewer(QMainWindow):
                 index = self.verticalOrderSet.index(currentPath)
                 indexNext = (index + 1) % len(self.verticalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext < index:
-                    return
+                    return False
                 newCurrentPath = self.verticalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     def verticalNextImage(self):
         """
@@ -1192,12 +1402,13 @@ class ImageViewer(QMainWindow):
                 index = self.verticalOrderSet.index(currentPath)
                 indexNext = (index - 1) % len(self.verticalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext > index:
-                    return
+                    return False
                 newCurrentPath = self.verticalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     # --- Horizontal Navigation (random order) ---
     def horizontalNextImage(self):
@@ -1210,12 +1421,13 @@ class ImageViewer(QMainWindow):
                 index = self.horizontalOrderSet.index(currentPath)
                 indexNext = (index + 1) % len(self.horizontalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext < index:
-                    return
+                    return False
                 newCurrentPath = self.horizontalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     def horizontalPreviousImage(self):
         """
@@ -1227,12 +1439,13 @@ class ImageViewer(QMainWindow):
                 index = self.horizontalOrderSet.index(currentPath)
                 indexNext = (index - 1) % len(self.horizontalOrderSet)
                 if not self.loopScroll.isChecked() and indexNext > index:
-                    return
+                    return False
                 newCurrentPath = self.horizontalOrderSet[indexNext]
                 if self.loadImageFromFile(newCurrentPath) is None:
                     self.remove(newCurrentPath)
                 else:
-                    break
+                    return True
+        return None
 
     def keyPressEvent(self, event):
         """
@@ -1481,10 +1694,15 @@ class ImageViewer(QMainWindow):
                     self.copyDestinations = config["copy_destinations"]
                 else:
                     self.copyDestinations = {}
+                if "move_destinations" in config:
+                    self.moveDestinations = config["move_destinations"]
+                else:
+                    self.moveDestinations = {}
             except Exception as e:
                 print("Error loading settings:", e)
         else:
             self.copyDestinations = {}
+            self.moveDestinations = {}
 
     def saveSettings(self):
         """
@@ -1496,6 +1714,7 @@ class ImageViewer(QMainWindow):
             "window_x": self.x(),
             "window_y": self.y(),
             "copy_destinations": self.copyDestinations,
+            "move_destinations": self.moveDestinations,
         }
         config_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "yee3_config.json"
@@ -1519,25 +1738,44 @@ class ImageViewer(QMainWindow):
                 text = f"Cmd+{i}: (not set)"
             self.copyList.addItem(text)
 
-    def copyToDestination(self, index):
+    def updateMoveList(self):
+        """Update the move destination list in the dock widget."""
+        self.moveList.clear()
+        for i in range(1, 10):
+            dest = self.moveDestinations.get(str(i)) or self.moveDestinations.get(i)
+            if dest:
+                text = f"Shift+{i}: {dest}"
+            else:
+                text = f"Shift+{i}: (not set)"
+            self.moveList.addItem(text)
+
+    def transferToDestination(self, index, move=False):
         """
-        Copy the current image file to the destination folder associated with the given index.
+        Transfer the current image file to the destination folder associated with the given index.
         If no destination is set for that index, prompt the user to select one.
 
-        :param index: The index (1-9) corresponding to the copy destination.
+        :param index: The index (1-9) corresponding to the Transfer destination.
         """
-        print(f"copyToDestination called with index: {index}")  # Debug output.
-        dest = self.copyDestinations.get(str(index)) or self.copyDestinations.get(index)
+        print(f"transferToDestination called with index: {index}")  # Debug output.
+        label = "Move" if move else "Copy"
+        label_result = "Moved" if move else "Copied"
+        shortcut_label = f"Shift+{index}" if move else f"Cmd+{index}"
+        destinations = self.moveDestinations if move else self.copyDestinations
+        transfer_function = shutil.move if move else shutil.copy2
+        dest = destinations.get(str(index)) or destinations.get(index)
         if not dest:
             folder = QFileDialog.getExistingDirectory(
-                self, f"Select destination for Cmd+{index}"
+                self, f"Select destination for {shortcut_label}"
             )
             if not folder:
                 print("No destination selected.")
-                return
+                return False
             dest = folder
-            self.copyDestinations[str(index)] = dest
-            self.updateCopyList()
+            destinations[str(index)] = dest
+            if move:
+                self.updateMoveList()
+            else:
+                self.updateCopyList()
 
         if self.currentPath:
             fileName = os.path.basename(self.currentPath)
@@ -1558,34 +1796,76 @@ class ImageViewer(QMainWindow):
                 result = dialog.exec()
 
                 if result == ReplaceDialogResult.REPLACE:
-                    # Replace copy
+                    # Replace Transfer
                     try:
-                        shutil.copy2(self.currentPath, targetPath)
+                        transfer_function(self.currentPath, targetPath)
                         self.statusBar().showMessage(f"Replaced file at {dest}", 3000)
+                        return True
                     except Exception as e:
-                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                        self.statusBar().showMessage(f"{label} failed: {e}", 3000)
+                        return False
                 elif result == ReplaceDialogResult.RENAME:
-                    # Copy with a new name
+                    # Transfer with a new name
                     try:
-                        copy_with_unique_name(self.currentPath, dest)
+                        transfer_with_unique_name(self.currentPath, dest, move)
                         self.statusBar().showMessage(
-                            f"Copied to {dest} with a new name", 3000
+                            f"{label_result} to {dest} with a new name", 3000
                         )
+                        return True
                     except Exception as e:
-                        self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                        self.statusBar().showMessage(f"{label} failed: {e}", 3000)
+                        return False
                 elif result == ReplaceDialogResult.CANCEL:
                     # Cancel
-                    self.statusBar().showMessage("Copy canceled", 3000)
-                    return
+                    self.statusBar().showMessage(f"{label} canceled", 3000)
+                    return False
             else:
-                # If there is no file with the same name, perform a normal copy
+                # If there is no file with the same name, perform a normal copy or move
                 try:
-                    shutil.copy2(self.currentPath, targetPath)
-                    self.statusBar().showMessage(f"Copied to {dest}", 3000)
+                    transfer_function(self.currentPath, targetPath)
+                    self.statusBar().showMessage(f"{label_result} to {dest}", 3000)
+                    return True
                 except Exception as e:
-                    self.statusBar().showMessage(f"Copy failed: {e}", 3000)
+                    self.statusBar().showMessage(f"{label} failed: {e}", 3000)
+                    return False
         else:
             print("No current file available.")
+        return False
+
+    def copyToDestination(self, index):
+        """
+        Copy the current image file to the move destination folder for the given index.
+        """
+        return self.transferToDestination(index, move=False)
+
+    def moveToDestination(self, index):
+        """
+        Move the current image file to the move destination folder for the given index.
+        """
+        def get_next_image_after_move(current_image):
+            if current_image is None or len(self.verticalOrderSet) <= 1:
+                return None
+
+            current_index = self.verticalOrderSet.index(current_image.path_nf)
+            if current_index > 0:
+                return self.verticalOrderSet[current_index - 1]
+            if self.loopScroll.isChecked():
+                return self.verticalOrderSet[-1]
+            return self.verticalOrderSet[1]
+
+        current_image = self.mtimeOrderSet.index_map.get(self.currentPath)
+        next_image = get_next_image_after_move(current_image)
+
+        if not self.transferToDestination(index, move=True):
+            return False
+
+        if current_image is None:
+            return True
+
+        self.remove(current_image)
+        if next_image is not None:
+            self.loadImageFromFile(next_image)
+        return True
 
     def onCopyListDoubleClicked(self, item):
         """
@@ -1595,6 +1875,11 @@ class ImageViewer(QMainWindow):
         row = self.copyList.row(item)
         index = row + 1
         self.copyToDestination(index)
+
+    def onMoveListDoubleClicked(self, item):
+        """Handle double-click on move list."""
+        index = self.moveList.row(item) + 1
+        self.moveToDestination(index)
 
     def eventFilter(self, obj, event):
         """
