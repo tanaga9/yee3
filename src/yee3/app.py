@@ -1841,11 +1841,11 @@ class ImageViewer(QMainWindow):
         """
         Move the current image file to the move destination folder for the given index.
         """
-        def next_image_after_removal(removed_path):
-            if len(self.verticalOrderSet) <= 1:
+        def get_next_image_after_move(current_image):
+            if current_image is None or len(self.verticalOrderSet) <= 1:
                 return None
 
-            current_index = self.verticalOrderSet.index(removed_path)
+            current_index = self.verticalOrderSet.index(current_image.path_nf)
             if current_index > 0:
                 return self.verticalOrderSet[current_index - 1]
             if self.loopScroll.isChecked():
@@ -1853,17 +1853,18 @@ class ImageViewer(QMainWindow):
             return self.verticalOrderSet[1]
 
         current_image = self.mtimeOrderSet.index_map.get(self.currentPath)
-        next_image = (
-            next_image_after_removal(current_image.path_nf)
-            if current_image is not None
-            else None
-        )
-        result = self.transferToDestination(index, move=True)
-        if result and current_image is not None:
-            self.remove(current_image)
-            if next_image is not None:
-                self.loadImageFromFile(next_image)
-        return result
+        next_image = get_next_image_after_move(current_image)
+
+        if not self.transferToDestination(index, move=True):
+            return False
+
+        if current_image is None:
+            return True
+
+        self.remove(current_image)
+        if next_image is not None:
+            self.loadImageFromFile(next_image)
+        return True
 
     def onCopyListDoubleClicked(self, item):
         """
