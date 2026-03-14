@@ -1759,12 +1759,13 @@ class ImageViewer(QMainWindow):
         print(f"transferToDestination called with index: {index}")  # Debug output.
         label = "Move" if move else "Copy"
         label_result = "Moved" if move else "Copied"
+        shortcut_label = f"Shift+{index}" if move else f"Cmd+{index}"
         destinations = self.moveDestinations if move else self.copyDestinations
         transfer_function = shutil.move if move else shutil.copy2
         dest = destinations.get(str(index)) or destinations.get(index)
         if not dest:
             folder = QFileDialog.getExistingDirectory(
-                self, f"Select destination for Cmd+{index}"
+                self, f"Select destination for {shortcut_label}"
             )
             if not folder:
                 print("No destination selected.")
