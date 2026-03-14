@@ -1768,7 +1768,7 @@ class ImageViewer(QMainWindow):
             )
             if not folder:
                 print("No destination selected.")
-                return
+                return False
             dest = folder
             destinations[str(index)] = dest
             if move:
@@ -1799,8 +1799,10 @@ class ImageViewer(QMainWindow):
                     try:
                         transfer_function(self.currentPath, targetPath)
                         self.statusBar().showMessage(f"Replaced file at {dest}", 3000)
+                        return True
                     except Exception as e:
                         self.statusBar().showMessage(f"{label} failed: {e}", 3000)
+                        return False
                 elif result == ReplaceDialogResult.RENAME:
                     # Transfer with a new name
                     try:
@@ -1808,21 +1810,26 @@ class ImageViewer(QMainWindow):
                         self.statusBar().showMessage(
                             f"{label_result} to {dest} with a new name", 3000
                         )
+                        return True
                     except Exception as e:
                         self.statusBar().showMessage(f"{label} failed: {e}", 3000)
+                        return False
                 elif result == ReplaceDialogResult.CANCEL:
                     # Cancel
-                    self.statusBar().showMessage("{label} canceled", 3000)
-                    return
+                    self.statusBar().showMessage(f"{label} canceled", 3000)
+                    return False
             else:
                 # If there is no file with the same name, perform a normal copy or move
                 try:
                     transfer_function(self.currentPath, targetPath)
                     self.statusBar().showMessage(f"{label_result} to {dest}", 3000)
+                    return True
                 except Exception as e:
                     self.statusBar().showMessage(f"{label} failed: {e}", 3000)
+                    return False
         else:
             print("No current file available.")
+        return False
 
     def copyToDestination(self, index):
         """
@@ -1834,10 +1841,28 @@ class ImageViewer(QMainWindow):
         """
         Move the current image file to the move destination folder for the given index.
         """
+        def next_image_after_removal(removed_path):
+            if len(self.verticalOrderSet) <= 1:
+                return None
+
+            current_index = self.verticalOrderSet.index(removed_path)
+            if current_index > 0:
+                return self.verticalOrderSet[current_index - 1]
+            if self.loopScroll.isChecked():
+                return self.verticalOrderSet[-1]
+            return self.verticalOrderSet[1]
+
+        current_image = self.mtimeOrderSet.index_map.get(self.currentPath)
+        next_image = (
+            next_image_after_removal(current_image.path_nf)
+            if current_image is not None
+            else None
+        )
         result = self.transferToDestination(index, move=True)
-        # Automatically show the next image after moving
-        if self.verticalNextImage() is False:
-            self.verticalPreviousImage()
+        if result and current_image is not None:
+            self.remove(current_image)
+            if next_image is not None:
+                self.loadImageFromFile(next_image)
         return result
 
     def onCopyListDoubleClicked(self, item):
