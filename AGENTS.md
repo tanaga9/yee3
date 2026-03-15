@@ -14,6 +14,13 @@
 - Preserve independent vertical and horizontal navigation orders.
 - Do not drift toward thumbnail-first or file-manager-style UI.
 
+## Documentation Policy
+
+- Keep documents concise. Do not restate the same idea in multiple sections unless the repetition is necessary as a guardrail.
+- Prefer one clear statement over layered explanation.
+- Keep `README.md` user-facing, `SPEC.md` design-facing, and `AGENTS.md` decision-facing.
+- When a concept is already defined well in one document, reference it rather than rewriting it in another.
+
 ## References
 
 - `README.md`: product concept and user-facing design intent
