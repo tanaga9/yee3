@@ -321,7 +321,7 @@ class ImageData:
 
 class FastOrderedSet:
     """
-    An ordered set that mimics list behavior while ensuring unique elements.
+    An ordered set optimized for path-based lookup and next/previous navigation.
     """
 
     def __init__(self, iterable=None, key_func=None):
@@ -329,6 +329,8 @@ class FastOrderedSet:
         self.items: List[ImageData] = []  # List for index-based access
         self.keys = SortedList()  # Binary search optimized
         self.index_map: Dict[str, ImageData] = {}  # Map paths to objects
+        self.next_map: Dict[str, str | None] = {}  # Path links for this set's items[] order
+        self.prev_map: Dict[str, str | None] = {}  # Path links for this set's items[] order
         self.key_func = key_func
         if iterable:
             self.update(iterable)
@@ -346,8 +348,16 @@ class FastOrderedSet:
             index = self.keys.bisect_left(key)  # Get insertion index (O(log N))
             self.keys.add(key)  # Maintain sorted order (O(log N))
 
+        prev_path = self.items[index - 1].path_nf if index > 0 else None
+        next_path = self.items[index].path_nf if index < len(self.items) else None
         self.items.insert(index, item)  # Insert at the correct position (O(N))
         self.index_map[item.path_nf] = item  # Store reference for quick lookup
+        self.prev_map[item.path_nf] = prev_path
+        self.next_map[item.path_nf] = next_path
+        if prev_path is not None:
+            self.next_map[prev_path] = item.path_nf
+        if next_path is not None:
+            self.prev_map[next_path] = item.path_nf
 
     def update(self, sequence):
         """
@@ -369,8 +379,18 @@ class FastOrderedSet:
             # raise KeyError(f"'{item.path_nf}' not found in FastOrderedSet")
             return  # idempotent
 
+        prev_path = self.prev_map.get(item.path_nf)
+        next_path = self.next_map.get(item.path_nf)
+
         # Remove from index_map
         del self.index_map[item.path_nf]
+        self.prev_map.pop(item.path_nf, None)
+        self.next_map.pop(item.path_nf, None)
+
+        if prev_path is not None:
+            self.next_map[prev_path] = next_path
+        if next_path is not None:
+            self.prev_map[next_path] = prev_path
 
         # Remove from the items list
         self.items.remove(item)
@@ -385,31 +405,46 @@ class FastOrderedSet:
         self.items.clear()
         self.keys.clear()
         self.index_map.clear()
+        self.next_map.clear()
+        self.prev_map.clear()
 
-    def index(self, value: str) -> int:
-        """
-        Return the index of a given string value. O(1).
+    def get(self, value: str):
+        """Return the ImageData for the given path in this set."""
+        return self.index_map.get(value)
 
-        - If found, returns the index.
-        - If not found, raises a `ValueError`.
-        """
-        if value in self.index_map:
-            return self.items.index(self.index_map[value])
-        raise ValueError(f"'{value}' not found in FastOrderedSet")
+    def first_path(self):
+        """Return the first path in this set's items[] order."""
+        if not self.items:
+            return None
+        return self.items[0].path_nf
+
+    def last_path(self):
+        """Return the last path in this set's items[] order."""
+        if not self.items:
+            return None
+        return self.items[-1].path_nf
+
+    def next_path(self, value: str, loop=False):
+        """Return the next path in this set's items[] order."""
+        if value not in self.index_map:
+            raise ValueError(f"'{value}' not found in FastOrderedSet")
+        next_path = self.next_map.get(value)
+        if next_path is None and loop:
+            return self.first_path()
+        return next_path
+
+    def prev_path(self, value: str, loop=False):
+        """Return the previous path in this set's items[] order."""
+        if value not in self.index_map:
+            raise ValueError(f"'{value}' not found in FastOrderedSet")
+        prev_path = self.prev_map.get(value)
+        if prev_path is None and loop:
+            return self.last_path()
+        return prev_path
 
     def __len__(self):
         """Return the number of elements. O(1)."""
         return len(self.items)
-
-    def __getitem__(self, index: int) -> ImageData:
-        """
-        Retrieve:
-        - String when given an integer index. O(1).
-        - Slice when given a slice. O(K), where K is the slice size.
-        """
-        if isinstance(index, int):
-            return self.items[index]  # O(1)
-        raise TypeError("Index must be an integer")
 
     def __iter__(self):
         """Iterate through elements in order. O(N)."""
@@ -1381,13 +1416,16 @@ class ImageViewer(QMainWindow):
         if self.verticalOrderSet:
             currentPath = self.currentPath
             while len(self.verticalOrderSet) and currentPath:
-                index = self.verticalOrderSet.index(currentPath)
-                indexNext = (index + 1) % len(self.verticalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext < index:
+                newCurrentPath = self.verticalOrderSet.next_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.verticalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.verticalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1399,13 +1437,16 @@ class ImageViewer(QMainWindow):
         if self.verticalOrderSet:
             currentPath = self.currentPath
             while len(self.verticalOrderSet) and currentPath:
-                index = self.verticalOrderSet.index(currentPath)
-                indexNext = (index - 1) % len(self.verticalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext > index:
+                newCurrentPath = self.verticalOrderSet.prev_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.verticalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.verticalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1418,13 +1459,16 @@ class ImageViewer(QMainWindow):
         if self.horizontalOrderSet:
             currentPath = self.currentPath
             while len(self.horizontalOrderSet) and currentPath:
-                index = self.horizontalOrderSet.index(currentPath)
-                indexNext = (index + 1) % len(self.horizontalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext < index:
+                newCurrentPath = self.horizontalOrderSet.next_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.horizontalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.horizontalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1436,13 +1480,16 @@ class ImageViewer(QMainWindow):
         if self.horizontalOrderSet:
             currentPath = self.currentPath
             while len(self.horizontalOrderSet) and currentPath:
-                index = self.horizontalOrderSet.index(currentPath)
-                indexNext = (index - 1) % len(self.horizontalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext > index:
+                newCurrentPath = self.horizontalOrderSet.prev_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.horizontalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.horizontalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1846,14 +1893,16 @@ class ImageViewer(QMainWindow):
             if current_image is None or len(self.verticalOrderSet) <= 1:
                 return None
 
-            current_index = self.verticalOrderSet.index(current_image.path_nf)
-            if current_index > 0:
-                return self.verticalOrderSet[current_index - 1]
-            if self.loopScroll.isChecked():
-                return self.verticalOrderSet[-1]
-            return self.verticalOrderSet[1]
+            next_path = self.verticalOrderSet.prev_path(
+                current_image.path_nf, loop=self.loopScroll.isChecked()
+            )
+            if next_path is None:
+                next_path = self.verticalOrderSet.next_path(current_image.path_nf)
+            if next_path is None:
+                return None
+            return self.verticalOrderSet.get(next_path)
 
-        current_image = self.mtimeOrderSet.index_map.get(self.currentPath)
+        current_image = self.verticalOrderSet.get(self.currentPath)
         next_image = get_next_image_after_move(current_image)
 
         if not self.transferToDestination(index, move=True):

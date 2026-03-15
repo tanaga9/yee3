@@ -53,15 +53,15 @@ flowchart LR
     C -.->|"select as current"| F
     D -.->|"select as current"| F
 
-    E -->|"index(currentPath) / items[index]"| G["Vertical navigation"]
-    F -->|"index(currentPath) / items[index]"| H["Horizontal navigation"]
+    E -->|"next/prev path from currentPath"| G["Vertical navigation"]
+    F -->|"next/prev path from currentPath"| H["Horizontal navigation"]
 
     B --->|"index_map[path_nf]"| I["current image lookup"]
     C --->|"index_map[path_nf]"| I
     D --->|"index_map[path_nf]"| I
 
-    I -->|"resolve current index"| G
-    I -->|"resolve current index"| H
+    I -->|"resolve current image"| G
+    I -->|"resolve current image"| H
 ```
 
 ## Current Image State
@@ -71,7 +71,7 @@ The currently displayed image is represented by two different kinds of state.
 - `currentPath`: the identity of the currently displayed image
 - `currentPixmap`: the decoded base image used for rendering and scale calculations
 
-`currentPath` is used to resolve the current position in the active order.
+`currentPath` is used to resolve the current image and its next/previous path in the active order.
 `currentPixmap` is used as the image source for display and fitting.
 Navigation loads the next `ImageData`, then rewrites both states through `loadImageFromFile(imageData)`.
 
@@ -87,3 +87,18 @@ flowchart LR
     E -->|"loadImageFromFile(nextImage)"| A
     F -->|"loadImageFromFile(nextImage)"| A
 ```
+
+## Complexity Constraints
+
+Let `N` be the number of images in one folder image set.
+
+Operation bounds:
+- Scanning one folder for supported files: `O(N)` metadata discovery
+- Building one order from known image metadata: currently `O(N^2)` in the incremental implementation, but should move toward `O(N log N)`
+- Building maintained orders should avoid unnecessary extra `O(N^2)` behavior beyond ordered insertion itself
+- Resolve the current image in an active order: `O(1)`
+- Next/previous navigation within an active order: `O(1)` target, and must not scale linearly with `N`
+- Switching the vertical or horizontal active order binding: `O(1)`
+
+The current implementation still pays its largest cost during incremental order construction.
+That cost is tolerated for now because the viewer must preserve globally ordered navigation without dropping functionality during loading, but future changes should reduce it rather than add new linear work to hot paths.
