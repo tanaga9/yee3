@@ -806,8 +806,8 @@ class ImageViewer(QMainWindow):
         self.verticalOrderSet = self.mtimeOrderSet
         self.horizontalOrderSet = self.randomOrderSet
 
-        # Store the currently loaded image (original, unscaled) and the current file path.
-        self.originalPixmap = None
+        # Store the current image render source and the current file path.
+        self.currentPixmap = None
         self.currentPath = None
 
         # The current scale factor.
@@ -889,7 +889,7 @@ class ImageViewer(QMainWindow):
         self.label.setText(f"count: {len(self.mtimeOrderSet)}")
 
         if len(self.mtimeOrderSet) == 0 or self.currentPath == imageData.path_nf:
-            self.originalPixmap = None
+            self.currentPixmap = None
             self.currentPath = None
 
     def createMenus(self):
@@ -1206,7 +1206,7 @@ class ImageViewer(QMainWindow):
             self.selected_file_path = filePath
 
         self.currentPath = None
-        self.originalPixmap = None
+        self.currentPixmap = None
 
         self.statusBar().showMessage("loading...", 2000)
 
@@ -1315,9 +1315,9 @@ class ImageViewer(QMainWindow):
 
     def loadImageFromFile(self, imageData: ImageData):
         """
-        Load and display the image specified by filePath.
+        Load and display the image represented by the given ImageData.
 
-        :param filePath: The full path to the image file.
+        :param imageData: Metadata for the image to display.
         """
         filePath = imageData.path_nf
         currentPath = unicodedata.normalize("NFD", filePath)
@@ -1341,9 +1341,9 @@ class ImageViewer(QMainWindow):
             return None
         else:
             self.currentPath = currentPath
-            self.originalPixmap = image
+            self.currentPixmap = image
             self.imageDisplay.setData(
-                self.originalPixmap,
+                self.currentPixmap,
                 QMovie(filePath) if ext in image_format_animated else None,
             )
             self.adjustImageScale()
@@ -1355,10 +1355,10 @@ class ImageViewer(QMainWindow):
         """
         Adjust the image scale so that it fits optimally in the available central area.
         """
-        if self.originalPixmap:
+        if self.currentPixmap:
             availableWidth = self.scrollArea.viewport().width()
             availableHeight = self.scrollArea.viewport().height()
-            imageSize = self.originalPixmap.size()
+            imageSize = self.currentPixmap.size()
             # Calculate the optimal scale for the screen
             self.fittedScale = min(
                 availableWidth / imageSize.width(), availableHeight / imageSize.height()
@@ -1366,17 +1366,17 @@ class ImageViewer(QMainWindow):
             # Adjust the current scale to the optimal size
             self.scaleFactor = self.fittedScale
             newSize = imageSize * self.scaleFactor
-            scaledPixmap = self.originalPixmap.scaled(
+            scaledPixmap = self.currentPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.imageDisplay.setPixmap(scaledPixmap)
             self.imageDisplay.setScaleFactor(self.scaleFactor)
             self.imageDisplay.resize(scaledPixmap.size())
 
-    # --- Vertical Navigation (sorted by last modified time) ---
+    # --- Vertical Navigation (using the currently assigned vertical order) ---
     def verticalPreviousImage(self):
         """
-        Show the previous image in vertical order (sorted by last modified time).
+        Show the previous image in the currently assigned vertical order.
         """
         if self.verticalOrderSet:
             currentPath = self.currentPath
@@ -1394,7 +1394,7 @@ class ImageViewer(QMainWindow):
 
     def verticalNextImage(self):
         """
-        Show the next image in vertical order (sorted by last modified time).
+        Show the next image in the currently assigned vertical order.
         """
         if self.verticalOrderSet:
             currentPath = self.currentPath
@@ -1410,10 +1410,10 @@ class ImageViewer(QMainWindow):
                     return True
         return None
 
-    # --- Horizontal Navigation (random order) ---
+    # --- Horizontal Navigation (using the currently assigned horizontal order) ---
     def horizontalNextImage(self):
         """
-        Show the next image in horizontal order (random order).
+        Show the next image in the currently assigned horizontal order.
         """
         if self.horizontalOrderSet:
             currentPath = self.currentPath
@@ -1431,7 +1431,7 @@ class ImageViewer(QMainWindow):
 
     def horizontalPreviousImage(self):
         """
-        Show the previous image in horizontal order (random order).
+        Show the previous image in the currently assigned horizontal order.
         """
         if self.horizontalOrderSet:
             currentPath = self.currentPath
@@ -1450,8 +1450,8 @@ class ImageViewer(QMainWindow):
     def keyPressEvent(self, event):
         """
         Handle key press events:
-          - Up/Down keys: navigate vertical order (last modified time).
-          - Left/Right keys: navigate horizontal order (random order).
+          - Up/Down keys: navigate using the currently assigned vertical order.
+          - Left/Right keys: navigate using the currently assigned horizontal order.
           - Plus/Equal keys: zoom in.
           - Minus key: zoom out.
         """
@@ -1610,10 +1610,10 @@ class ImageViewer(QMainWindow):
 
         :param factor: Multiplicative factor to adjust the scale.
         """
-        if self.originalPixmap:
+        if self.currentPixmap:
             self.scaleFactor *= factor
-            newSize = self.originalPixmap.size() * self.scaleFactor
-            scaledPixmap = self.originalPixmap.scaled(
+            newSize = self.currentPixmap.size() * self.scaleFactor
+            scaledPixmap = self.currentPixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.imageDisplay.setPixmap(scaledPixmap)
@@ -1898,8 +1898,8 @@ class ImageViewer(QMainWindow):
             status_bar_height = self.statusBar().height()
             adjusted_height = screen_height - status_bar_height
 
-            if self.originalPixmap:
-                image_size = self.originalPixmap.size()
+            if self.currentPixmap:
+                image_size = self.currentPixmap.size()
                 aspect_ratio = image_size.width() / image_size.height()
                 new_width = int(adjusted_height * aspect_ratio)
             else:
