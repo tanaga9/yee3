@@ -7,7 +7,7 @@ Sleek and fast.
 
 ![Yee 3](src/yee3/resources/yee3.iconset/icon_256x256.png)
 
-[Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I built this with ChatGPT (o3-mini-high).
+[Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I first built this with ChatGPT (o3-mini-high), and have continued evolving it with Codex CLI and whichever latest model was available at the time.
 
 Designed for macOS.
 half-hearted Windows support.

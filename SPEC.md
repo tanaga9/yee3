@@ -1,5 +1,5 @@
 
-# Yee3 Spec
+# Spec
 
 This document describes the core viewing model of Yee3.
 It focuses on how the app organizes image order, how navigation chooses the next image, and how the currently displayed image is represented in memory.
