@@ -1,0 +1,81 @@
+
+# Yee3 Spec
+
+This document describes the core viewing model of Yee3.
+It focuses on how the app organizes image order, how navigation chooses the next image, and how the currently displayed image is represented in memory.
+It does not attempt to document every UI control, file operation detail, or platform-specific behavior.
+
+## Scope And Terms
+
+Terms used in this document:
+
+- `ImageData`: the minimal metadata record used for navigation
+- `OrderSet`: a conceptual label for one ordered collection of `ImageData`
+- `currentPath`: the identity of the currently displayed image
+- `currentPixmap`: the in-memory image source used for display and scale calculations
+
+## Order Model
+
+Yee3 does not treat a folder as a thumbnail grid or a tree browser.
+It treats a folder as one image set with multiple possible orders.
+
+Base order sets:
+- `mtimeOrderSet`: newest-first order by file modified time
+- `fnameOrderSet`: lexical order by file name
+- `randomOrderSet`: stable pseudo-random order
+
+Active navigation bindings:
+- `verticalOrderSet`: the order currently assigned to vertical navigation
+- `horizontalOrderSet`: the order currently assigned to horizontal navigation
+
+The important point is that vertical and horizontal navigation do not read all order sets at once.
+Each direction uses exactly one currently selected order.
+
+```mermaid
+flowchart LR
+    A["Loaded ImageData list"] -->|"update(imageDataList)"| B["mtimeOrderSet"]
+    A -->|"update(imageDataList)"| C["fnameOrderSet"]
+    A -->|"update(imageDataList)"| D["randomOrderSet"]
+
+    B -.->|"select as current"| E["verticalOrderSet"]
+    C -.->|"select as current"| E
+    D -.->|"select as current"| E
+
+    B -.->|"select as current"| F["horizontalOrderSet"]
+    C -.->|"select as current"| F
+    D -.->|"select as current"| F
+
+    E -->|"index(currentPath) / items[index]"| G["Vertical navigation"]
+    F -->|"index(currentPath) / items[index]"| H["Horizontal navigation"]
+
+    B --->|"index_map[path_nf]"| I["current image lookup"]
+    C --->|"index_map[path_nf]"| I
+    D --->|"index_map[path_nf]"| I
+
+    I -->|"resolve current index"| G
+    I -->|"resolve current index"| H
+```
+
+## Current Image State
+
+The currently displayed image is represented by two different kinds of state.
+
+- `currentPath`: the identity of the currently displayed image
+- `currentPixmap`: the decoded base image used for rendering and scale calculations
+
+`currentPath` is used to resolve the current position in the active order.
+`currentPixmap` is used as the image source for display and fitting.
+Navigation loads the next `ImageData`, then rewrites both states through `loadImageFromFile(imageData)`.
+
+```mermaid
+flowchart LR
+    A["loadImageFromFile(imageData)"] -->|"imageData.path_nf"| B["currentPath"]
+    A ---->|"decoded image"| C["currentPixmap"]
+    C --->|"render + fit"| D["imageDisplay"]
+
+    B -->|"resolve current position"| E["Vertical navigation"]
+    B -->|"resolve current position"| F["Horizontal navigation"]
+
+    E -->|"loadImageFromFile(nextImage)"| A
+    F -->|"loadImageFromFile(nextImage)"| A
+```
