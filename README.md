@@ -17,6 +17,14 @@ Concept and design
 
 ![Concept and design](docs/concept_and_design.png)
 
+Yee 3 is designed as a single-image viewer for very large folders.
+
+It prioritizes rapid image swapping over thumbnail browsing, treating scrolling and touch-friendly input as primary navigation methods while also supporting precise keyboard control.
+
+Its single-image view can be explored through independent vertical and horizontal orders, with each axis freely switchable between last-modified order, filename order, and random order.
+
+Even with huge folders on SSDs, HDDs, or slower storage such as NAS, the aim is to keep browsing fluid and uninterrupted.
+
 How to build an app on your local Mac
 ------------------------------------
 
