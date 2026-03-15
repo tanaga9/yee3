@@ -40,6 +40,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QPinchGesture,
+    QPlainTextEdit,
+    QFrame,
 )
 from PySide6.QtGui import (
     QPixmap,
@@ -59,11 +61,17 @@ from PySide6.QtCore import (
     QTimer,
     QEvent,
     QPoint,
+    QSize,
     QThread,
     Signal,
     QFileSystemWatcher,
     QByteArray,
 )
+
+try:
+    from yee3.image_metadata import ImageMetadataResult, parse_image_metadata_bytes
+except ModuleNotFoundError:
+    from image_metadata import ImageMetadataResult, parse_image_metadata_bytes
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -605,6 +613,238 @@ class ImageDisplayWidget(QWidget):
             painter.drawPixmap(x, y, scaled_pixmap)
 
 
+class MetadataPlainTextEdit(QPlainTextEdit):
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        event.accept()
+
+
+class MetadataScrollArea(QScrollArea):
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        event.accept()
+
+
+class MetadataSection(QWidget):
+    def __init__(self, title: str, compact=False, parent=None):
+        super().__init__(parent)
+        self.compact = compact
+        self._copy_feedback_timer = QTimer(self)
+        self._copy_feedback_timer.setSingleShot(True)
+        self._copy_feedback_timer.timeout.connect(
+            lambda: self.copyButton.setText("Copy")
+        )
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+
+        self.titleLabel = QLabel(title)
+        self.titleLabel.setStyleSheet("font-size: 18px; font-weight: 700; color: #f2f2f2;")
+        header.addWidget(self.titleLabel)
+        header.addStretch()
+
+        self.copyButton = QPushButton("Copy")
+        self.copyButton.clicked.connect(self.copyContent)
+        self.copyButton.setStyleSheet(
+            "QPushButton {"
+            "background: #3a3a3a; color: #f2f2f2; border: 1px solid #4c4c4c;"
+            "border-radius: 10px; padding: 8px 14px; font-size: 14px;"
+            "}"
+            "QPushButton:hover { background: #474747; }"
+        )
+        header.addWidget(self.copyButton)
+        layout.addLayout(header)
+
+        self.textEdit = MetadataPlainTextEdit()
+        self.textEdit.setReadOnly(True)
+        self.textEdit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.textEdit.setStyleSheet(
+            "QPlainTextEdit {"
+            "background: #1f1f1f; color: #ededed; border: 1px solid #3a3a3a;"
+            "border-radius: 12px; padding: 12px; font-size: 14px;"
+            "}"
+        )
+        font = QFont("Courier New")
+        font.setStyleHint(QFont.Monospace)
+        self.textEdit.setFont(font)
+        if compact:
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            self.textEdit.setMinimumHeight(88)
+            self.textEdit.setMaximumHeight(180)
+        else:
+            self.textEdit.setMinimumHeight(100)
+            self.textEdit.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        layout.addWidget(self.textEdit)
+        self.hide()
+
+    def setTitle(self, title: str):
+        self.titleLabel.setText(title)
+
+    def setContent(self, text: str | None):
+        content = text or ""
+        self.textEdit.setPlainText(content)
+        self.copyButton.setEnabled(bool(content.strip()))
+        self.setVisible(bool(content.strip()))
+
+    def copyContent(self):
+        QApplication.clipboard().setText(self.textEdit.toPlainText())
+        self.copyButton.setText("Copied")
+        self._copy_feedback_timer.start(900)
+        window = self.window()
+        if isinstance(window, QMainWindow) and window.statusBar() is not None:
+            window.statusBar().showMessage("Copied metadata", 1200)
+
+
+class MetadataPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        self.metaLabel = QLabel("Image metadata will appear here.")
+        self.metaLabel.setWordWrap(True)
+        self.metaLabel.setStyleSheet("font-size: 13px; color: #b8b8b8;")
+        root.addWidget(self.metaLabel)
+
+        self.scroll = MetadataScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        root.addWidget(self.scroll, 1)
+
+        self.content = QWidget()
+        self.contentLayout = QVBoxLayout(self.content)
+        self.contentLayout.setContentsMargins(0, 0, 0, 0)
+        self.contentLayout.setSpacing(16)
+        self.scroll.setWidget(self.content)
+
+        self.parametersSection = MetadataSection("Parameters")
+        self.promptSection = MetadataSection("Positive Prompt", compact=True)
+        self.negativePromptSection = MetadataSection("Negative Prompt", compact=True)
+        self.promptJsonSection = MetadataSection("Prompt JSON")
+        self.workflowJsonSection = MetadataSection("Workflow JSON")
+        self.rawSection = MetadataSection("Raw Metadata")
+
+        self.contentLayout.addWidget(self.parametersSection, 1)
+        self.contentLayout.addWidget(self.promptSection, 0)
+        self.contentLayout.addWidget(self.negativePromptSection, 0)
+        self.contentLayout.addWidget(self.promptJsonSection, 1)
+        self.contentLayout.addWidget(self.workflowJsonSection, 1)
+        self.contentLayout.addWidget(self.rawSection, 1)
+
+        self.setStyleSheet("MetadataPanel { background: #262626; }")
+
+    def sizeHint(self):
+        return QSize(360, 640)
+
+    def minimumSizeHint(self):
+        return QSize(260, 240)
+
+    def setPlaceholder(self, text: str):
+        self.metaLabel.setText(text)
+        self.clearSections()
+
+    def setLoading(self, path: str):
+        self.metaLabel.setText("Loading metadata...")
+        self.clearSections()
+
+    def setError(self, path: str, fmt: str, error: str):
+        self.metaLabel.setText(f"Metadata\nFormat: {fmt}\nError: {error}")
+        self.clearSections()
+
+    def setResult(self, result: ImageMetadataResult):
+        facts = [f"Format: {result.format}"]
+        generator = result.fields.get("generator")
+        if generator:
+            facts.append(f"Generator: {generator}")
+        self.metaLabel.setText("  |  ".join(str(item) for item in facts))
+
+        parameters_text = result.fields.get("parameters_raw") or result.raw.get("parameters")
+        is_comfy = bool(
+            generator == "ComfyUI"
+            or result.fields.get("prompt_json") is not None
+            or result.fields.get("workflow_json") is not None
+        )
+        self.parametersSection.setTitle(
+            "Parameters" if parameters_text else "Metadata"
+        )
+        self.parametersSection.setContent(parameters_text)
+
+        prompt_text = result.fields.get("prompt")
+        if prompt_text == parameters_text:
+            prompt_text = None
+        if is_comfy:
+            self.promptSection.setContent(prompt_text)
+            self.negativePromptSection.setContent(result.fields.get("negative_prompt"))
+        else:
+            self.promptSection.setContent(None)
+            self.negativePromptSection.setContent(None)
+
+        prompt_json = stringify_json_section(result.fields.get("prompt_json"))
+        workflow_json = stringify_json_section(result.fields.get("workflow_json"))
+        self.promptJsonSection.setContent(prompt_json)
+        self.workflowJsonSection.setContent(workflow_json)
+
+        raw_payload = build_raw_metadata_text(result.raw)
+        if is_comfy:
+            self.rawSection.setContent(
+                raw_payload if raw_payload != parameters_text else None
+            )
+        else:
+            self.rawSection.setContent(None)
+
+        if not any(
+            section.isVisible()
+            for section in (
+                self.parametersSection,
+                self.promptSection,
+                self.negativePromptSection,
+                self.promptJsonSection,
+                self.workflowJsonSection,
+                self.rawSection,
+            )
+        ):
+            self.metaLabel.setText("No metadata found.")
+
+    def clearSections(self):
+        for section in (
+            self.parametersSection,
+            self.promptSection,
+            self.negativePromptSection,
+            self.promptJsonSection,
+            self.workflowJsonSection,
+            self.rawSection,
+        ):
+            section.setContent(None)
+
+
+def stringify_json_section(value):
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def build_raw_metadata_text(raw: dict):
+    if not raw:
+        return None
+    try:
+        return json.dumps(raw, indent=2, ensure_ascii=False)
+    except Exception:
+        lines = []
+        for key, value in raw.items():
+            lines.append(f"{key}\n{value}")
+        return "\n\n".join(lines)
+
+
 class ReplaceDialogResult(IntEnum):
     CANCEL = 0
     REPLACE = 1
@@ -826,6 +1066,14 @@ class ImageViewer(QMainWindow):
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
         )
 
+        self.metadataDock = QDockWidget("Info", self)
+        self.metadataPanel = MetadataPanel()
+        self.metadataDock.setWidget(self.metadataPanel)
+        self.metadataDock.setMinimumWidth(260)
+        self.metadataDock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.metadataDock)
+        self.metadataDock.visibilityChanged.connect(self.onMetadataDockVisibilityChanged)
+
         # Create the menu bar and add the "File" menu with several actions.
         self.createMenus()
 
@@ -926,6 +1174,8 @@ class ImageViewer(QMainWindow):
         if len(self.mtimeOrderSet) == 0 or self.currentPath == imageData.path_nf:
             self.currentPixmap = None
             self.currentPath = None
+            if self.metadataDock.isVisible():
+                self.metadataPanel.setPlaceholder("Image metadata will appear here.")
 
     def createMenus(self):
         """
@@ -958,6 +1208,10 @@ class ImageViewer(QMainWindow):
         moveToAction = QAction("Move to ...", self)
         moveToAction.triggered.connect(self.showMoveDock)
         fileMenu.addAction(moveToAction)
+
+        metadataAction = QAction("Info", self)
+        metadataAction.triggered.connect(self.showMetadataDock)
+        fileMenu.addAction(metadataAction)
 
     def openFile(self):
         """
@@ -993,6 +1247,28 @@ class ImageViewer(QMainWindow):
     def showMoveDock(self):
         """Show the move destination dock widget."""
         self.moveDock.show()
+
+    def showMetadataDock(self):
+        """Show the metadata dock widget."""
+        self.metadataDock.show()
+        self.refreshMetadataForCurrentImage()
+
+    def onMetadataDockVisibilityChanged(self, visible):
+        QTimer.singleShot(0, self.adjustImageScale)
+        if visible:
+            self.refreshMetadataForCurrentImage()
+        else:
+            self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+
+    def refreshMetadataForCurrentImage(self):
+        if not self.metadataDock.isVisible():
+            return
+        if not self.currentPath:
+            self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+            return
+        current_image = self.verticalOrderSet.get(self.currentPath)
+        if current_image is not None:
+            self.loadImageFromFile(current_image)
 
     def get_order_name(self, order):
         """Return the order type as a string based on the list object"""
@@ -1065,6 +1341,9 @@ class ImageViewer(QMainWindow):
         self.moveToAct = QAction("Move to ...", self)
         self.moveToAct.triggered.connect(self.showMoveDock)
 
+        self.metadataAct = QAction("Info", self)
+        self.metadataAct.triggered.connect(self.showMetadataDock)
+
         # self.zoomInAct = QAction("Zoom In", self)
         # self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
         # self.zoomInAct.triggered.connect(self.zoomIn)
@@ -1126,6 +1405,7 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
         toolbar.addAction(self.moveToAct)
+        toolbar.addAction(self.metadataAct)
         # toolbar.addAction(self.zoomInAct)
         # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
@@ -1358,6 +1638,18 @@ class ImageViewer(QMainWindow):
         currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         ext = Path(filePath).suffix[1:]
+        should_read_metadata = self.metadataDock.isVisible()
+        image_bytes = None
+
+        if should_read_metadata and ext not in image_format_extractors.keys():
+            try:
+                with open(filePath, "rb") as f:
+                    image_bytes = f.read()
+            except Exception as e:
+                if self.metadataDock.isVisible():
+                    self.metadataPanel.setError(currentPath, ext or "unknown", str(e))
+                image_bytes = None
+
         if ext in image_format_extractors.keys():
             try:
                 image_data = image_format_extractors[ext](filePath)
@@ -1365,14 +1657,22 @@ class ImageViewer(QMainWindow):
                 print("Error loading image:", e, filePath)
                 return None
             if image_data:
+                if should_read_metadata:
+                    image_bytes = image_data
                 image = QPixmap()
                 image.loadFromData(QByteArray(image_data))
             else:
                 return None
         else:
-            image = QPixmap(filePath)
+            if image_bytes is not None:
+                image = QPixmap()
+                image.loadFromData(QByteArray(image_bytes))
+            else:
+                image = QPixmap(filePath)
         if image.isNull():
             self.imageDisplay.clearData()
+            if self.metadataDock.isVisible():
+                self.metadataPanel.setPlaceholder("Unable to read image metadata.")
             return None
         else:
             self.currentPath = currentPath
@@ -1382,6 +1682,17 @@ class ImageViewer(QMainWindow):
                 QMovie(filePath) if ext in image_format_animated else None,
             )
             self.adjustImageScale()
+            if self.metadataDock.isVisible():
+                if image_bytes is None:
+                    self.metadataPanel.setPlaceholder("Image metadata is unavailable for this image.")
+                else:
+                    metadata = parse_image_metadata_bytes(currentPath, image_bytes)
+                    if metadata.error:
+                        self.metadataPanel.setError(
+                            metadata.path, metadata.format, metadata.error
+                        )
+                    else:
+                        self.metadataPanel.setResult(metadata)
             count = self.counter.count()
             self.count_label.setText(f"{count:>3} ips")
             return image
@@ -1675,6 +1986,7 @@ class ImageViewer(QMainWindow):
         actions = {}
         if self.os_type == OSType.MACOS:
             actions[menu.addAction("Reveal in Finder")] = "reveal"
+        actions[menu.addAction("Info")] = "info"
         action = menu.exec_(event.globalPos())
         if action in actions:
             if actions[action] == "reveal":
@@ -1683,6 +1995,8 @@ class ImageViewer(QMainWindow):
                         subprocess.call(["open", "-R", self.currentPath])
                     except Exception as e:
                         print("Error revealing file in Finder:", e)
+            elif actions[action] == "info":
+                self.showMetadataDock()
 
     def dragEnterEvent(self, event):
         """
