@@ -5,6 +5,11 @@ This document describes the core viewing model of Yee3.
 It focuses on how the app organizes image order, how navigation chooses the next image, and how the currently displayed image is represented in memory.
 It does not attempt to document every UI control, file operation detail, or platform-specific behavior.
 
+The highest-priority requirement is performance on folders containing tens of thousands of images.
+Both initial loading and next/previous image navigation must remain fast enough to feel immediate in practical use.
+This requirement also applies to slower or higher-latency storage such as NAS and network shares.
+The design should prefer algorithms and data flow that perform well across both local and remote storage, rather than relying on storage-specific branching whenever possible.
+
 ## Scope And Terms
 
 Terms used in this document:
@@ -18,6 +23,7 @@ Terms used in this document:
 
 Yee3 does not treat a folder as a thumbnail grid or a tree browser.
 It treats a folder as one image set with multiple possible orders.
+This model is chosen to preserve both fast initial loading and fast image-to-image navigation at large folder sizes.
 
 Base order sets:
 - `mtimeOrderSet`: newest-first order by file modified time
