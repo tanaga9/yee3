@@ -1,5 +1,5 @@
 
-# Yee3 Spec
+# Spec
 
 This document describes the core viewing model of Yee3.
 It focuses on how the app organizes image order, how navigation chooses the next image, and how the currently displayed image is represented in memory.
@@ -9,6 +9,8 @@ The highest-priority requirement is performance on folders containing tens of th
 Both initial loading and next/previous image navigation must remain fast enough to feel immediate in practical use.
 This requirement also applies to slower or higher-latency storage such as NAS and network shares.
 The design should prefer algorithms and data flow that perform well across both local and remote storage, rather than relying on storage-specific branching whenever possible.
+Lazy or incremental loading must not materially degrade the interaction model.
+During loading, navigation and order switching should remain available without feature loss, blocked states, or "wait until loading finishes" compromises in normal use.
 
 ## Scope And Terms
 
