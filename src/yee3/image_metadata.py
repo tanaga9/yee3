@@ -8,11 +8,12 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 A1111_KEYS = ("Steps:", "Sampler:", "CFG scale:", "Seed:", "Size:", "Model:")
 EXIF_TEXT_TAGS = {
     0x010E: "ImageDescription",
+    0x010F: "Make",
+    0x0110: "Model",
     0x9286: "UserComment",
     0x9C9B: "XPTitle",
     0x9C9C: "XPComment",
@@ -236,11 +237,15 @@ def parse_webp(data: bytes) -> dict[str, str]:
         offset = end + (chunk_size & 1)
 
         if chunk_id == b"EXIF":
-            exif_sources.extend(extract_exif_texts(payload))
+            exif_sources.extend(extract_exif_texts(payload, include_make_model=True))
         elif chunk_id == b"XMP ":
             xmp_parts.append(decode_best(payload))
 
-    apply_exif_sources(raw, exif_sources)
+    apply_comfy_webp_exif_sources(raw, exif_sources)
+    apply_exif_sources(
+        raw,
+        [(key, value) for key, value in exif_sources if key not in {"Make", "Model"}],
+    )
     if xmp_parts:
         xmp_text = "".join(xmp_parts)
         raw["XMP"] = xmp_text
@@ -284,7 +289,9 @@ def sort_sources_by_priority(
     return sorted(sources, key=lambda item: rank.get(item[0], len(priority)))
 
 
-def extract_exif_texts(exif_data: bytes) -> list[tuple[str, str]]:
+def extract_exif_texts(
+    exif_data: bytes, include_make_model: bool = False
+) -> list[tuple[str, str]]:
     if len(exif_data) < 8:
         return []
     endian_bytes = exif_data[:2]
@@ -304,6 +311,8 @@ def extract_exif_texts(exif_data: bytes) -> list[tuple[str, str]]:
             text = decode_user_comment(raw_value)
         elif tag == 0x010E:
             text = decode_ascii(raw_value)
+        elif include_make_model and tag in {0x010F, 0x0110}:
+            text = decode_ifd0_text(raw_value)
         elif tag in {0x9C9B, 0x9C9C, 0x9C9D, 0x9C9E, 0x9C9F}:
             text = decode_xp(raw_value)
         else:
@@ -311,6 +320,27 @@ def extract_exif_texts(exif_data: bytes) -> list[tuple[str, str]]:
         if text:
             results.append((EXIF_TEXT_TAGS.get(tag, hex(tag)), text))
     return results
+
+
+def apply_comfy_webp_exif_sources(raw: dict[str, str], sources: list[tuple[str, str]]):
+    values = {key: value for key, value in sources if value}
+    prompt = strip_prefixed_value(values.get("Model"), "prompt:")
+    workflow = strip_prefixed_value(values.get("Make"), "workflow:")
+    if prompt:
+        raw["prompt"] = prompt
+    if workflow:
+        raw["workflow"] = workflow
+
+
+def strip_prefixed_value(value: str | None, prefix: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if value.startswith(prefix):
+        return value[len(prefix) :]
+    upper_prefix = prefix[:1].upper() + prefix[1:]
+    if value.startswith(upper_prefix):
+        return value[len(upper_prefix) :]
+    return None
 
 
 def parse_ifd(
@@ -379,6 +409,24 @@ def decode_ascii(raw: bytes) -> str:
     return raw.split(b"\x00", 1)[0].decode("latin-1", errors="ignore")
 
 
+def decode_ifd0_text(raw: bytes) -> str:
+    value = raw.rstrip(b"\x00")
+    if not value:
+        return ""
+    if (
+        value.startswith((b"\xff\xfe", b"\xfe\xff"))
+        or value.count(b"\x00") / len(value) > 0.2
+    ):
+        return decode_best(value).strip("\x00")
+    text = value.decode("utf-8", errors="replace")
+    if "\ufffd" in text:
+        try:
+            return value.decode("ms932")
+        except Exception:
+            return value.decode("shift_jis", errors="replace")
+    return text
+
+
 def decode_user_comment(raw: bytes) -> str:
     if len(raw) < 8:
         return decode_best(raw)
@@ -427,7 +475,12 @@ def extract_xmp_attributes(text: str) -> dict[str, str]:
         for elem in root.iter():
             for attr_name, attr_value in elem.attrib.items():
                 local_name = attr_name.split("}")[-1]
-                if local_name in {"parameters", "Parameters", "sd-metadata", "sd_metadata"}:
+                if local_name in {
+                    "parameters",
+                    "Parameters",
+                    "sd-metadata",
+                    "sd_metadata",
+                }:
                     results[local_name] = html.unescape(attr_value.strip())
     if not results:
         for match in re.finditer(
@@ -459,13 +512,19 @@ def normalize_fields(raw: dict[str, str]) -> dict:
             fields[normalized_key] = value
 
     for key, value in raw.items():
-        if key in {"prompt", "Prompt", "negative_prompt", "Negative prompt"}:
-            continue
-        if key not in fields and key not in {"XMP", "Comment", "UserComment", "XPComment", "ImageDescription"}:
-            fields[key] = value
         parsed_json = maybe_parse_json(value)
         if parsed_json is not None:
             fields[f"{key}_json"] = parsed_json
+        if key in {"prompt", "Prompt", "negative_prompt", "Negative prompt"}:
+            continue
+        if key not in fields and key not in {
+            "XMP",
+            "Comment",
+            "UserComment",
+            "XPComment",
+            "ImageDescription",
+        }:
+            fields[key] = value
 
     fields.update(extract_comfy_fields(fields))
 
@@ -570,7 +629,9 @@ def extract_from_comfy_graph(graph: dict) -> dict[str, object]:
 def resolve_comfy_text(graph: dict, connection):
     if connection is None:
         return None
-    source_id = connection[0] if isinstance(connection, list) and connection else connection
+    source_id = (
+        connection[0] if isinstance(connection, list) and connection else connection
+    )
     node = graph.get(str(source_id))
     if not isinstance(node, dict):
         return None
