@@ -1250,8 +1250,11 @@ class ImageViewer(QMainWindow):
 
     def showMetadataDock(self):
         """Show the metadata dock widget."""
-        self.metadataDock.show()
-        self.refreshMetadataForCurrentImage()
+        if self.metadataDock.isVisible():
+            self.refreshMetadataForCurrentImage()
+        else:
+            # visibilityChanged refreshes metadata when the dock opens.
+            self.metadataDock.show()
 
     def onMetadataDockVisibilityChanged(self, visible):
         QTimer.singleShot(0, self.adjustImageScale)

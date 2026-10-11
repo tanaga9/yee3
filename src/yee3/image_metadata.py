@@ -410,14 +410,13 @@ def decode_ascii(raw: bytes) -> str:
 
 
 def decode_ifd0_text(raw: bytes) -> str:
+    if has_utf16_signature(raw):
+        return decode_utf16(raw).strip("\x00")
     value = raw.rstrip(b"\x00")
     if not value:
         return ""
-    if (
-        value.startswith((b"\xff\xfe", b"\xfe\xff"))
-        or value.count(b"\x00") / len(value) > 0.2
-    ):
-        return decode_best(value).strip("\x00")
+    if value.startswith(b"\xef\xbb\xbf"):
+        return value.decode("utf-8-sig", errors="replace")
     text = value.decode("utf-8", errors="replace")
     if "\ufffd" in text:
         try:
@@ -435,8 +434,9 @@ def decode_user_comment(raw: bytes) -> str:
     if prefix.startswith(b"ASCII"):
         return content.rstrip(b"\x00").decode("latin-1", errors="ignore")
     if prefix.startswith(b"UNICODE"):
-        encoding = "utf-16be" if len(content) >= 2 and content[0] == 0 else "utf-16le"
-        return content.decode(encoding, errors="ignore").strip("\x00")
+        # Piexif writes big-endian Unicode comments, including in little-endian
+        # TIFFs. Without a BOM or ASCII code units, byte order is ambiguous.
+        return decode_utf16(content, default="utf-16be").strip("\x00")
     if prefix.startswith(b"JIS"):
         try:
             return content.rstrip(b"\x00").decode("ms932")
@@ -451,8 +451,68 @@ def decode_xp(raw: bytes) -> str:
     return raw.decode("utf-16le", errors="ignore")
 
 
+def utf16_byte_order(data: bytes, *, known_utf16: bool = False) -> str | None:
+    # Ignore complete NUL terminators, without removing the high byte of the
+    # final character. Sample whole code units to keep large metadata cheap.
+    # Explicit Unicode comments may contain ASCII evidence only near the end.
+    sample = data if known_utf16 else data[:4096]
+    sample = sample[:len(sample) - len(sample) % 2]
+    end = len(sample)
+    while end >= 2 and sample[end - 2:end] == b"\x00\x00":
+        end -= 2
+    sample = sample[:end]
+    if not sample:
+        return None
+    if known_utf16:
+        # Prefer contiguous ASCII text over isolated ASCII-looking units
+        # produced by byte-swapping Japanese characters such as U+3000.
+        be_ascii = le_ascii = 0
+        be_run = le_run = be_longest = le_longest = 0
+        for first, second in zip(sample[::2], sample[1::2]):
+            if first == 0 and (second in (9, 10, 13) or 32 <= second <= 126):
+                be_ascii += 1
+                be_run += 1
+                le_run = 0
+                be_longest = max(be_longest, be_run)
+            elif second == 0 and (first in (9, 10, 13) or 32 <= first <= 126):
+                le_ascii += 1
+                le_run += 1
+                be_run = 0
+                le_longest = max(le_longest, le_run)
+            else:
+                be_run = le_run = 0
+        be_score = (be_longest, be_ascii)
+        le_score = (le_longest, le_ascii)
+        if be_score != le_score:
+            return "utf-16be" if be_score > le_score else "utf-16le"
+        return None
+    even_zeros = sample[::2].count(0)
+    odd_zeros = sample[1::2].count(0)
+    if max(even_zeros, odd_zeros) < 2 or max(even_zeros, odd_zeros) * 5 <= len(sample):
+        return None
+    if even_zeros > odd_zeros:
+        return "utf-16be"
+    if odd_zeros > even_zeros:
+        return "utf-16le"
+    return None
+
+
+def has_utf16_signature(data: bytes) -> bool:
+    return data.startswith((b"\xff\xfe", b"\xfe\xff")) or utf16_byte_order(data) is not None
+
+
+def decode_utf16(data: bytes, default: str = "utf-16le") -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="ignore")
+    return data.decode(utf16_byte_order(data, known_utf16=True) or default, errors="ignore")
+
+
 def decode_best(data: bytes) -> str:
-    for encoding in ("utf-8", "utf-16le", "utf-16be", "ms932", "shift_jis", "latin-1"):
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig", errors="replace")
+    if has_utf16_signature(data):
+        return decode_utf16(data).strip("\x00")
+    for encoding in ("utf-8", "ms932", "shift_jis", "utf-16le", "utf-16be", "latin-1"):
         try:
             text = data.decode(encoding)
         except Exception:
