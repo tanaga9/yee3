@@ -1669,7 +1669,12 @@ class ImageViewer(QMainWindow):
         else:
             if image_bytes is not None:
                 image = QPixmap()
-                image.loadFromData(QByteArray(image_bytes))
+                encoded_image = QByteArray(image_bytes)
+                if not image.loadFromData(encoded_image):
+                    # Formats such as TGA need an extension hint. Try the
+                    # same bytes again before reopening high-latency files.
+                    if not image.loadFromData(encoded_image, ext.lower()):
+                        image = QPixmap(filePath)
             else:
                 image = QPixmap(filePath)
         if image.isNull():
