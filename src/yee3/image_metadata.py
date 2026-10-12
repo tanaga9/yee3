@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 A1111_KEYS = ("Steps:", "Sampler:", "CFG scale:", "Seed:", "Size:", "Model:")
@@ -32,6 +33,18 @@ class ImageMetadataResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class MetadataFormat:
+    extensions: tuple[str, ...]
+    signature: tuple[tuple[int, bytes], ...]
+    parser: Callable[[bytes], dict[str, str]]
+
+
+def supports_image_metadata(path: str) -> bool:
+    extension = Path(path).suffix.lower()
+    return any(extension in fmt.extensions for fmt in METADATA_FORMATS.values())
+
+
 def parse_image_metadata(path: str) -> ImageMetadataResult:
     normalized_path = unicodedata.normalize("NFD", path)
     try:
@@ -50,12 +63,9 @@ def parse_image_metadata_bytes(path: str, data: bytes) -> ImageMetadataResult:
     result.format = fmt
 
     try:
-        if fmt == "png":
-            result.raw = parse_png(data)
-        elif fmt == "jpeg":
-            result.raw = parse_jpeg(data)
-        elif fmt == "webp":
-            result.raw = parse_webp(data)
+        metadata_format = METADATA_FORMATS.get(fmt)
+        if metadata_format is not None:
+            result.raw = metadata_format.parser(data)
         result.fields = normalize_fields(result.raw)
     except Exception as exc:
         result.error = str(exc)
@@ -64,18 +74,16 @@ def parse_image_metadata_bytes(path: str, data: bytes) -> ImageMetadataResult:
 
 
 def detect_format(data: bytes, ext: str) -> str:
-    if data.startswith(PNG_SIGNATURE):
-        return "png"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp"
-    if len(data) >= 2 and data[:2] == b"\xff\xd8":
-        return "jpeg"
-    if ext in {".jpg", ".jpeg"}:
-        return "jpeg"
-    if ext == ".png":
-        return "png"
-    if ext == ".webp":
-        return "webp"
+    # Prefer the file signature over a potentially incorrect extension.
+    for name, fmt in METADATA_FORMATS.items():
+        if all(
+            data[offset : offset + len(value)] == value
+            for offset, value in fmt.signature
+        ):
+            return name
+    for name, fmt in METADATA_FORMATS.items():
+        if ext.lower() in fmt.extensions:
+            return name
     return "unknown"
 
 
@@ -253,6 +261,13 @@ def parse_webp(data: bytes) -> dict[str, str]:
     return raw
 
 
+METADATA_FORMATS = {
+    "png": MetadataFormat((".png",), ((0, PNG_SIGNATURE),), parse_png),
+    "jpeg": MetadataFormat((".jpg", ".jpeg"), ((0, b"\xff\xd8"),), parse_jpeg),
+    "webp": MetadataFormat((".webp",), ((0, b"RIFF"), (8, b"WEBP")), parse_webp),
+}
+
+
 def apply_exif_sources(raw: dict[str, str], sources: list[tuple[str, str]]):
     priority = ["UserComment", "XPComment", "ImageDescription", "XPTitle"]
     preferred = sort_sources_by_priority(sources, priority)
@@ -310,7 +325,7 @@ def extract_exif_texts(
         if tag == 0x9286:
             text = decode_user_comment(raw_value)
         elif tag == 0x010E:
-            text = decode_ascii(raw_value)
+            text = decode_ifd0_text(raw_value)
         elif include_make_model and tag in {0x010F, 0x0110}:
             text = decode_ifd0_text(raw_value)
         elif tag in {0x9C9B, 0x9C9C, 0x9C9D, 0x9C9E, 0x9C9F}:

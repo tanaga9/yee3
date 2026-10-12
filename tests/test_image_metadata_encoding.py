@@ -2,7 +2,7 @@ import io
 import json
 import unittest
 
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from yee3.image_metadata import (
     decode_best,
@@ -14,6 +14,25 @@ from yee3.image_metadata import (
 
 
 class MetadataEncodingTests(unittest.TestCase):
+    def test_file_signature_selects_parser_over_extension(self):
+        text = "猫の写真\nSteps: 20"
+        for fmt, wrong_extension in (("PNG", "jpg"), ("JPEG", "webp"), ("WEBP", "png")):
+            with self.subTest(format=fmt):
+                if fmt == "PNG":
+                    metadata = PngImagePlugin.PngInfo()
+                    metadata.add_text("parameters", text)
+                    options = {"pnginfo": metadata}
+                else:
+                    exif = Image.Exif()
+                    exif[0x010E] = text.encode("utf-8") + b"\x00"
+                    options = {"exif": exif}
+                stream = io.BytesIO()
+                Image.new("RGB", (1, 1)).save(stream, format=fmt, **options)
+                result = parse_image_metadata_bytes(f"image.{wrong_extension}", stream.getvalue())
+                self.assertIsNone(result.error)
+                self.assertEqual(result.format, fmt.lower())
+                self.assertEqual(result.fields["parameters_raw"], text)
+
     def test_existing_utf8_and_japanese_encodings(self):
         for text, encoding in (
             ("prompt:cat", "ascii"),
@@ -110,6 +129,25 @@ class MetadataEncodingTests(unittest.TestCase):
         self.assertEqual(result.fields["prompt_json"], graph)
         self.assertEqual(result.fields["workflow_json"], workflow)
         self.assertEqual(result.fields["prompt"], "猫の写真")
+
+    def test_image_description_end_to_end(self):
+        for fmt, extension in (("JPEG", "jpg"), ("WEBP", "webp")):
+            for text, encoding in (
+                ("cat\nSteps: 20", "ascii"),
+                ("猫の写真\nSteps: 20, Seed: 1", "utf-8"),
+                ("①と髙\nSteps: 20", "ms932"),
+                ("猫の写真\nSteps: 20", "utf-16"),
+            ):
+                with self.subTest(format=fmt, encoding=encoding):
+                    exif = Image.Exif()
+                    terminator = b"\x00\x00" if encoding == "utf-16" else b"\x00"
+                    exif[0x010E] = text.encode(encoding) + terminator
+                    stream = io.BytesIO()
+                    Image.new("RGB", (1, 1)).save(stream, format=fmt, exif=exif)
+                    result = parse_image_metadata_bytes(f"image.{extension}", stream.getvalue())
+                    self.assertIsNone(result.error)
+                    self.assertEqual(result.raw["ImageDescription"], text)
+                    self.assertEqual(result.fields["parameters_raw"], text)
 
 
 if __name__ == "__main__":

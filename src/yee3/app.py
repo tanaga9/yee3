@@ -69,9 +69,17 @@ from PySide6.QtCore import (
 )
 
 try:
-    from yee3.image_metadata import ImageMetadataResult, parse_image_metadata_bytes
+    from yee3.image_metadata import (
+        ImageMetadataResult,
+        parse_image_metadata_bytes,
+        supports_image_metadata,
+    )
 except ModuleNotFoundError:
-    from image_metadata import ImageMetadataResult, parse_image_metadata_bytes
+    from image_metadata import (
+        ImageMetadataResult,
+        parse_image_metadata_bytes,
+        supports_image_metadata,
+    )
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -792,7 +800,9 @@ class MetadataPanel(QWidget):
         self.workflowJsonSection.setContent(workflow_json)
 
         raw_payload = build_raw_metadata_text(result.raw)
-        if is_comfy:
+        # Keep the parameters view compact, but expose other metadata when
+        # there is no parameters section to display it.
+        if is_comfy or not parameters_text:
             self.rawSection.setContent(
                 raw_payload if raw_payload != parameters_text else None
             )
@@ -800,7 +810,7 @@ class MetadataPanel(QWidget):
             self.rawSection.setContent(None)
 
         if not any(
-            section.isVisible()
+            not section.isHidden()
             for section in (
                 self.parametersSection,
                 self.promptSection,
@@ -1644,7 +1654,13 @@ class ImageViewer(QMainWindow):
         should_read_metadata = self.metadataDock.isVisible()
         image_bytes = None
 
-        if should_read_metadata and ext not in image_format_extractors.keys():
+        # Preserve streaming image reads for formats the metadata parser
+        # cannot handle, especially large animations on network storage.
+        if (
+            should_read_metadata
+            and supports_image_metadata(filePath)
+            and ext not in image_format_extractors.keys()
+        ):
             try:
                 with open(filePath, "rb") as f:
                     image_bytes = f.read()
