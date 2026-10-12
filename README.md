@@ -34,9 +34,16 @@ How to build an app on your local Mac
 - **Build**
 
 ```sh
-iconutil -c icns src/yee3/resources/yee3.iconset
-pdm run briefcase build macOS
-cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.
+./build_on_macOS.command
+```
+
+GitHub Actions uses the same macOS build script, then packages the app.
+
+The `.icns` and `.ico` icons are committed build inputs. After changing the PNGs
+in `src/yee3/resources/yee3.iconset`, regenerate and commit both icons:
+
+```sh
+pdm run python scripts/update_icons.py
 ```
 
 Used via Automator (without build)

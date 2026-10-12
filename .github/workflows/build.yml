@@ -28,21 +28,12 @@ jobs:
           pip install pdm
           pdm install --dev
 
-      - name: Create iconset
-        run: |
-          iconutil -c icns src/yee3/resources/yee3.iconset
-
-      - name: Build app with Briefcase
-        run: |
-          pdm run briefcase build macOS
-
-      - name: Replace Info.plist
-        run: |
-          cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.
+      - name: Build app
+        run: ./build_on_macOS.command
 
       - name: Package app
         run: |
-          printf "1\n" | pdm run briefcase package macOS
+          pdm run python -m briefcase package macOS --adhoc-sign --no-input
 
       - name: Upload built app
         uses: actions/upload-artifact@v4
@@ -116,27 +107,13 @@ jobs:
           pip install pdm
           pdm install --dev
 
-      - name: Install ImageMagick via Chocolatey
-        run: choco install imagemagick -y
-
-      - name: Verify ImageMagick installation
-        run: magick -version
-
-      - name: Create ICO file from PNG images
-        run: |
-          magick convert \
-            src/yee3/resources/yee3.iconset/icon_256x256.png \
-            -define icon:auto-resize=16,32,48,256 -compress zip \
-            src/yee3/resources/yee3.ico
-        shell: bash
-
       - name: Build app with Briefcase for Windows
         run: |
-          pdm run briefcase build windows
+          pdm run python -m briefcase build windows
 
       - name: Package app for Windows
         run: |
-          pdm run briefcase package windows
+          pdm run python -m briefcase package windows
 
       - name: Upload built app artifact (Windows)
         uses: actions/upload-artifact@v4
