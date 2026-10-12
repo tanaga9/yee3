@@ -46,6 +46,18 @@ in `src/yee3/resources/yee3.iconset`, regenerate and commit both icons:
 pdm run python scripts/update_icons.py
 ```
 
+Release a new version
+---------------------
+
+On `main`, update the version in `pyproject.toml` and `Info.plist`:
+
+```sh
+pdm run python scripts/set_version.py 0.4.0
+```
+
+Review and build, then manually commit both files, create the annotated tag
+`v0.4.0`, and push `main` and the tag. Substitute the intended release version.
+
 Used via Automator (without build)
 ----------------------------------
 

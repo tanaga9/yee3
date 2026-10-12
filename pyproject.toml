@@ -22,6 +22,7 @@ distribution = false
 [dependency-groups]
 dev = [
     "briefcase>=0.3.22",
+    "tomlkit<1,>=0.13",
 ]
 
 [tool.briefcase]
