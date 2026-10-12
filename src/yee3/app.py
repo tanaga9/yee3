@@ -40,6 +40,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QPinchGesture,
+    QPlainTextEdit,
+    QFrame,
 )
 from PySide6.QtGui import (
     QPixmap,
@@ -59,11 +61,25 @@ from PySide6.QtCore import (
     QTimer,
     QEvent,
     QPoint,
+    QSize,
     QThread,
     Signal,
     QFileSystemWatcher,
     QByteArray,
 )
+
+try:
+    from yee3.image_metadata import (
+        ImageMetadataResult,
+        parse_image_metadata_bytes,
+        supports_image_metadata,
+    )
+except ModuleNotFoundError:
+    from image_metadata import (
+        ImageMetadataResult,
+        parse_image_metadata_bytes,
+        supports_image_metadata,
+    )
 
 # 0 <= decay < 1
 scroll_factors_dict = {
@@ -321,7 +337,7 @@ class ImageData:
 
 class FastOrderedSet:
     """
-    An ordered set that mimics list behavior while ensuring unique elements.
+    An ordered set optimized for path-based lookup and next/previous navigation.
     """
 
     def __init__(self, iterable=None, key_func=None):
@@ -329,6 +345,8 @@ class FastOrderedSet:
         self.items: List[ImageData] = []  # List for index-based access
         self.keys = SortedList()  # Binary search optimized
         self.index_map: Dict[str, ImageData] = {}  # Map paths to objects
+        self.next_map: Dict[str, str | None] = {}  # Path links for this set's items[] order
+        self.prev_map: Dict[str, str | None] = {}  # Path links for this set's items[] order
         self.key_func = key_func
         if iterable:
             self.update(iterable)
@@ -346,8 +364,16 @@ class FastOrderedSet:
             index = self.keys.bisect_left(key)  # Get insertion index (O(log N))
             self.keys.add(key)  # Maintain sorted order (O(log N))
 
+        prev_path = self.items[index - 1].path_nf if index > 0 else None
+        next_path = self.items[index].path_nf if index < len(self.items) else None
         self.items.insert(index, item)  # Insert at the correct position (O(N))
         self.index_map[item.path_nf] = item  # Store reference for quick lookup
+        self.prev_map[item.path_nf] = prev_path
+        self.next_map[item.path_nf] = next_path
+        if prev_path is not None:
+            self.next_map[prev_path] = item.path_nf
+        if next_path is not None:
+            self.prev_map[next_path] = item.path_nf
 
     def update(self, sequence):
         """
@@ -369,8 +395,18 @@ class FastOrderedSet:
             # raise KeyError(f"'{item.path_nf}' not found in FastOrderedSet")
             return  # idempotent
 
+        prev_path = self.prev_map.get(item.path_nf)
+        next_path = self.next_map.get(item.path_nf)
+
         # Remove from index_map
         del self.index_map[item.path_nf]
+        self.prev_map.pop(item.path_nf, None)
+        self.next_map.pop(item.path_nf, None)
+
+        if prev_path is not None:
+            self.next_map[prev_path] = next_path
+        if next_path is not None:
+            self.prev_map[next_path] = prev_path
 
         # Remove from the items list
         self.items.remove(item)
@@ -385,31 +421,46 @@ class FastOrderedSet:
         self.items.clear()
         self.keys.clear()
         self.index_map.clear()
+        self.next_map.clear()
+        self.prev_map.clear()
 
-    def index(self, value: str) -> int:
-        """
-        Return the index of a given string value. O(1).
+    def get(self, value: str):
+        """Return the ImageData for the given path in this set."""
+        return self.index_map.get(value)
 
-        - If found, returns the index.
-        - If not found, raises a `ValueError`.
-        """
-        if value in self.index_map:
-            return self.items.index(self.index_map[value])
-        raise ValueError(f"'{value}' not found in FastOrderedSet")
+    def first_path(self):
+        """Return the first path in this set's items[] order."""
+        if not self.items:
+            return None
+        return self.items[0].path_nf
+
+    def last_path(self):
+        """Return the last path in this set's items[] order."""
+        if not self.items:
+            return None
+        return self.items[-1].path_nf
+
+    def next_path(self, value: str, loop=False):
+        """Return the next path in this set's items[] order."""
+        if value not in self.index_map:
+            raise ValueError(f"'{value}' not found in FastOrderedSet")
+        next_path = self.next_map.get(value)
+        if next_path is None and loop:
+            return self.first_path()
+        return next_path
+
+    def prev_path(self, value: str, loop=False):
+        """Return the previous path in this set's items[] order."""
+        if value not in self.index_map:
+            raise ValueError(f"'{value}' not found in FastOrderedSet")
+        prev_path = self.prev_map.get(value)
+        if prev_path is None and loop:
+            return self.last_path()
+        return prev_path
 
     def __len__(self):
         """Return the number of elements. O(1)."""
         return len(self.items)
-
-    def __getitem__(self, index: int) -> ImageData:
-        """
-        Retrieve:
-        - String when given an integer index. O(1).
-        - Slice when given a slice. O(K), where K is the slice size.
-        """
-        if isinstance(index, int):
-            return self.items[index]  # O(1)
-        raise TypeError("Index must be an integer")
 
     def __iter__(self):
         """Iterate through elements in order. O(N)."""
@@ -568,6 +619,240 @@ class ImageDisplayWidget(QWidget):
             x = (self.width() - scaled_pixmap.width()) // 2
             y = (self.height() - scaled_pixmap.height()) // 2
             painter.drawPixmap(x, y, scaled_pixmap)
+
+
+class MetadataPlainTextEdit(QPlainTextEdit):
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        event.accept()
+
+
+class MetadataScrollArea(QScrollArea):
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        event.accept()
+
+
+class MetadataSection(QWidget):
+    def __init__(self, title: str, compact=False, parent=None):
+        super().__init__(parent)
+        self.compact = compact
+        self._copy_feedback_timer = QTimer(self)
+        self._copy_feedback_timer.setSingleShot(True)
+        self._copy_feedback_timer.timeout.connect(
+            lambda: self.copyButton.setText("Copy")
+        )
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+
+        self.titleLabel = QLabel(title)
+        self.titleLabel.setStyleSheet("font-size: 18px; font-weight: 700; color: #f2f2f2;")
+        header.addWidget(self.titleLabel)
+        header.addStretch()
+
+        self.copyButton = QPushButton("Copy")
+        self.copyButton.clicked.connect(self.copyContent)
+        self.copyButton.setStyleSheet(
+            "QPushButton {"
+            "background: #3a3a3a; color: #f2f2f2; border: 1px solid #4c4c4c;"
+            "border-radius: 10px; padding: 8px 14px; font-size: 14px;"
+            "}"
+            "QPushButton:hover { background: #474747; }"
+        )
+        header.addWidget(self.copyButton)
+        layout.addLayout(header)
+
+        self.textEdit = MetadataPlainTextEdit()
+        self.textEdit.setReadOnly(True)
+        self.textEdit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.textEdit.setStyleSheet(
+            "QPlainTextEdit {"
+            "background: #1f1f1f; color: #ededed; border: 1px solid #3a3a3a;"
+            "border-radius: 12px; padding: 12px; font-size: 14px;"
+            "}"
+        )
+        font = QFont("Courier New")
+        font.setStyleHint(QFont.Monospace)
+        self.textEdit.setFont(font)
+        if compact:
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            self.textEdit.setMinimumHeight(88)
+            self.textEdit.setMaximumHeight(180)
+        else:
+            self.textEdit.setMinimumHeight(100)
+            self.textEdit.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        layout.addWidget(self.textEdit)
+        self.hide()
+
+    def setTitle(self, title: str):
+        self.titleLabel.setText(title)
+
+    def setContent(self, text: str | None):
+        content = text or ""
+        self.textEdit.setPlainText(content)
+        self.copyButton.setEnabled(bool(content.strip()))
+        self.setVisible(bool(content.strip()))
+
+    def copyContent(self):
+        QApplication.clipboard().setText(self.textEdit.toPlainText())
+        self.copyButton.setText("Copied")
+        self._copy_feedback_timer.start(900)
+        window = self.window()
+        if isinstance(window, QMainWindow) and window.statusBar() is not None:
+            window.statusBar().showMessage("Copied metadata", 1200)
+
+
+class MetadataPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        self.metaLabel = QLabel("Image metadata will appear here.")
+        self.metaLabel.setWordWrap(True)
+        self.metaLabel.setStyleSheet("font-size: 13px; color: #b8b8b8;")
+        root.addWidget(self.metaLabel)
+
+        self.scroll = MetadataScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        root.addWidget(self.scroll, 1)
+
+        self.content = QWidget()
+        self.contentLayout = QVBoxLayout(self.content)
+        self.contentLayout.setContentsMargins(0, 0, 0, 0)
+        self.contentLayout.setSpacing(16)
+        self.scroll.setWidget(self.content)
+
+        self.parametersSection = MetadataSection("Parameters")
+        self.promptSection = MetadataSection("Positive Prompt", compact=True)
+        self.negativePromptSection = MetadataSection("Negative Prompt", compact=True)
+        self.promptJsonSection = MetadataSection("Prompt JSON")
+        self.workflowJsonSection = MetadataSection("Workflow JSON")
+        self.rawSection = MetadataSection("Raw Metadata")
+
+        self.contentLayout.addWidget(self.parametersSection, 1)
+        self.contentLayout.addWidget(self.promptSection, 0)
+        self.contentLayout.addWidget(self.negativePromptSection, 0)
+        self.contentLayout.addWidget(self.promptJsonSection, 1)
+        self.contentLayout.addWidget(self.workflowJsonSection, 1)
+        self.contentLayout.addWidget(self.rawSection, 1)
+
+        self.setStyleSheet("MetadataPanel { background: #262626; }")
+
+    def sizeHint(self):
+        return QSize(360, 640)
+
+    def minimumSizeHint(self):
+        return QSize(260, 240)
+
+    def setPlaceholder(self, text: str):
+        self.metaLabel.setText(text)
+        self.clearSections()
+
+    def setLoading(self, path: str):
+        self.metaLabel.setText("Loading metadata...")
+        self.clearSections()
+
+    def setError(self, path: str, fmt: str, error: str):
+        self.metaLabel.setText(f"Metadata\nFormat: {fmt}\nError: {error}")
+        self.clearSections()
+
+    def setResult(self, result: ImageMetadataResult):
+        facts = [f"Format: {result.format}"]
+        generator = result.fields.get("generator")
+        if generator:
+            facts.append(f"Generator: {generator}")
+        self.metaLabel.setText("  |  ".join(str(item) for item in facts))
+
+        parameters_text = result.fields.get("parameters_raw") or result.raw.get("parameters")
+        is_comfy = bool(
+            generator == "ComfyUI"
+            or result.fields.get("prompt_json") is not None
+            or result.fields.get("workflow_json") is not None
+        )
+        self.parametersSection.setTitle(
+            "Parameters" if parameters_text else "Metadata"
+        )
+        self.parametersSection.setContent(parameters_text)
+
+        prompt_text = result.fields.get("prompt")
+        if prompt_text == parameters_text:
+            prompt_text = None
+        if is_comfy:
+            self.promptSection.setContent(prompt_text)
+            self.negativePromptSection.setContent(result.fields.get("negative_prompt"))
+        else:
+            self.promptSection.setContent(None)
+            self.negativePromptSection.setContent(None)
+
+        prompt_json = stringify_json_section(result.fields.get("prompt_json"))
+        workflow_json = stringify_json_section(result.fields.get("workflow_json"))
+        self.promptJsonSection.setContent(prompt_json)
+        self.workflowJsonSection.setContent(workflow_json)
+
+        raw_payload = build_raw_metadata_text(result.raw)
+        # Keep the parameters view compact, but expose other metadata when
+        # there is no parameters section to display it.
+        if is_comfy or not parameters_text:
+            self.rawSection.setContent(
+                raw_payload if raw_payload != parameters_text else None
+            )
+        else:
+            self.rawSection.setContent(None)
+
+        if not any(
+            not section.isHidden()
+            for section in (
+                self.parametersSection,
+                self.promptSection,
+                self.negativePromptSection,
+                self.promptJsonSection,
+                self.workflowJsonSection,
+                self.rawSection,
+            )
+        ):
+            self.metaLabel.setText("No metadata found.")
+
+    def clearSections(self):
+        for section in (
+            self.parametersSection,
+            self.promptSection,
+            self.negativePromptSection,
+            self.promptJsonSection,
+            self.workflowJsonSection,
+            self.rawSection,
+        ):
+            section.setContent(None)
+
+
+def stringify_json_section(value):
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def build_raw_metadata_text(raw: dict):
+    if not raw:
+        return None
+    try:
+        return json.dumps(raw, indent=2, ensure_ascii=False)
+    except Exception:
+        lines = []
+        for key, value in raw.items():
+            lines.append(f"{key}\n{value}")
+        return "\n\n".join(lines)
 
 
 class ReplaceDialogResult(IntEnum):
@@ -791,6 +1076,14 @@ class ImageViewer(QMainWindow):
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
         )
 
+        self.metadataDock = QDockWidget("Info", self)
+        self.metadataPanel = MetadataPanel()
+        self.metadataDock.setWidget(self.metadataPanel)
+        self.metadataDock.setMinimumWidth(260)
+        self.metadataDock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.metadataDock)
+        self.metadataDock.visibilityChanged.connect(self.onMetadataDockVisibilityChanged)
+
         # Create the menu bar and add the "File" menu with several actions.
         self.createMenus()
 
@@ -891,6 +1184,8 @@ class ImageViewer(QMainWindow):
         if len(self.mtimeOrderSet) == 0 or self.currentPath == imageData.path_nf:
             self.currentPixmap = None
             self.currentPath = None
+            if self.metadataDock.isVisible():
+                self.metadataPanel.setPlaceholder("Image metadata will appear here.")
 
     def createMenus(self):
         """
@@ -923,6 +1218,10 @@ class ImageViewer(QMainWindow):
         moveToAction = QAction("Move to ...", self)
         moveToAction.triggered.connect(self.showMoveDock)
         fileMenu.addAction(moveToAction)
+
+        metadataAction = QAction("Info", self)
+        metadataAction.triggered.connect(self.showMetadataDock)
+        fileMenu.addAction(metadataAction)
 
     def openFile(self):
         """
@@ -958,6 +1257,31 @@ class ImageViewer(QMainWindow):
     def showMoveDock(self):
         """Show the move destination dock widget."""
         self.moveDock.show()
+
+    def showMetadataDock(self):
+        """Show the metadata dock widget."""
+        if self.metadataDock.isVisible():
+            self.refreshMetadataForCurrentImage()
+        else:
+            # visibilityChanged refreshes metadata when the dock opens.
+            self.metadataDock.show()
+
+    def onMetadataDockVisibilityChanged(self, visible):
+        QTimer.singleShot(0, self.adjustImageScale)
+        if visible:
+            self.refreshMetadataForCurrentImage()
+        else:
+            self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+
+    def refreshMetadataForCurrentImage(self):
+        if not self.metadataDock.isVisible():
+            return
+        if not self.currentPath:
+            self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+            return
+        current_image = self.verticalOrderSet.get(self.currentPath)
+        if current_image is not None:
+            self.loadImageFromFile(current_image)
 
     def get_order_name(self, order):
         """Return the order type as a string based on the list object"""
@@ -1030,6 +1354,9 @@ class ImageViewer(QMainWindow):
         self.moveToAct = QAction("Move to ...", self)
         self.moveToAct.triggered.connect(self.showMoveDock)
 
+        self.metadataAct = QAction("Info", self)
+        self.metadataAct.triggered.connect(self.showMetadataDock)
+
         # self.zoomInAct = QAction("Zoom In", self)
         # self.zoomInAct.setShortcut(QKeySequence.ZoomIn)
         # self.zoomInAct.triggered.connect(self.zoomIn)
@@ -1091,6 +1418,7 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.refreshFolder)
         toolbar.addAction(self.copyToAct)
         toolbar.addAction(self.moveToAct)
+        toolbar.addAction(self.metadataAct)
         # toolbar.addAction(self.zoomInAct)
         # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
@@ -1323,6 +1651,24 @@ class ImageViewer(QMainWindow):
         currentPath = unicodedata.normalize("NFD", filePath)
         self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         ext = Path(filePath).suffix[1:]
+        should_read_metadata = self.metadataDock.isVisible()
+        image_bytes = None
+
+        # Preserve streaming image reads for formats the metadata parser
+        # cannot handle, especially large animations on network storage.
+        if (
+            should_read_metadata
+            and supports_image_metadata(filePath)
+            and ext not in image_format_extractors.keys()
+        ):
+            try:
+                with open(filePath, "rb") as f:
+                    image_bytes = f.read()
+            except Exception as e:
+                if self.metadataDock.isVisible():
+                    self.metadataPanel.setError(currentPath, ext or "unknown", str(e))
+                image_bytes = None
+
         if ext in image_format_extractors.keys():
             try:
                 image_data = image_format_extractors[ext](filePath)
@@ -1330,14 +1676,27 @@ class ImageViewer(QMainWindow):
                 print("Error loading image:", e, filePath)
                 return None
             if image_data:
+                if should_read_metadata:
+                    image_bytes = image_data
                 image = QPixmap()
                 image.loadFromData(QByteArray(image_data))
             else:
                 return None
         else:
-            image = QPixmap(filePath)
+            if image_bytes is not None:
+                image = QPixmap()
+                encoded_image = QByteArray(image_bytes)
+                if not image.loadFromData(encoded_image):
+                    # Formats such as TGA need an extension hint. Try the
+                    # same bytes again before reopening high-latency files.
+                    if not image.loadFromData(encoded_image, ext.lower()):
+                        image = QPixmap(filePath)
+            else:
+                image = QPixmap(filePath)
         if image.isNull():
             self.imageDisplay.clearData()
+            if self.metadataDock.isVisible():
+                self.metadataPanel.setPlaceholder("Unable to read image metadata.")
             return None
         else:
             self.currentPath = currentPath
@@ -1347,6 +1706,17 @@ class ImageViewer(QMainWindow):
                 QMovie(filePath) if ext in image_format_animated else None,
             )
             self.adjustImageScale()
+            if self.metadataDock.isVisible():
+                if image_bytes is None:
+                    self.metadataPanel.setPlaceholder("Image metadata is unavailable for this image.")
+                else:
+                    metadata = parse_image_metadata_bytes(currentPath, image_bytes)
+                    if metadata.error:
+                        self.metadataPanel.setError(
+                            metadata.path, metadata.format, metadata.error
+                        )
+                    else:
+                        self.metadataPanel.setResult(metadata)
             count = self.counter.count()
             self.count_label.setText(f"{count:>3} ips")
             return image
@@ -1381,13 +1751,16 @@ class ImageViewer(QMainWindow):
         if self.verticalOrderSet:
             currentPath = self.currentPath
             while len(self.verticalOrderSet) and currentPath:
-                index = self.verticalOrderSet.index(currentPath)
-                indexNext = (index + 1) % len(self.verticalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext < index:
+                newCurrentPath = self.verticalOrderSet.next_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.verticalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.verticalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1399,13 +1772,16 @@ class ImageViewer(QMainWindow):
         if self.verticalOrderSet:
             currentPath = self.currentPath
             while len(self.verticalOrderSet) and currentPath:
-                index = self.verticalOrderSet.index(currentPath)
-                indexNext = (index - 1) % len(self.verticalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext > index:
+                newCurrentPath = self.verticalOrderSet.prev_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.verticalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.verticalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1418,13 +1794,16 @@ class ImageViewer(QMainWindow):
         if self.horizontalOrderSet:
             currentPath = self.currentPath
             while len(self.horizontalOrderSet) and currentPath:
-                index = self.horizontalOrderSet.index(currentPath)
-                indexNext = (index + 1) % len(self.horizontalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext < index:
+                newCurrentPath = self.horizontalOrderSet.next_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.horizontalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.horizontalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1436,13 +1815,16 @@ class ImageViewer(QMainWindow):
         if self.horizontalOrderSet:
             currentPath = self.currentPath
             while len(self.horizontalOrderSet) and currentPath:
-                index = self.horizontalOrderSet.index(currentPath)
-                indexNext = (index - 1) % len(self.horizontalOrderSet)
-                if not self.loopScroll.isChecked() and indexNext > index:
+                newCurrentPath = self.horizontalOrderSet.prev_path(
+                    currentPath, loop=self.loopScroll.isChecked()
+                )
+                if newCurrentPath is None:
                     return False
-                newCurrentPath = self.horizontalOrderSet[indexNext]
-                if self.loadImageFromFile(newCurrentPath) is None:
-                    self.remove(newCurrentPath)
+                newCurrentImage = self.horizontalOrderSet.get(newCurrentPath)
+                if newCurrentImage is None:
+                    return False
+                if self.loadImageFromFile(newCurrentImage) is None:
+                    self.remove(newCurrentImage)
                 else:
                     return True
         return None
@@ -1628,6 +2010,7 @@ class ImageViewer(QMainWindow):
         actions = {}
         if self.os_type == OSType.MACOS:
             actions[menu.addAction("Reveal in Finder")] = "reveal"
+        actions[menu.addAction("Info")] = "info"
         action = menu.exec_(event.globalPos())
         if action in actions:
             if actions[action] == "reveal":
@@ -1636,6 +2019,8 @@ class ImageViewer(QMainWindow):
                         subprocess.call(["open", "-R", self.currentPath])
                     except Exception as e:
                         print("Error revealing file in Finder:", e)
+            elif actions[action] == "info":
+                self.showMetadataDock()
 
     def dragEnterEvent(self, event):
         """
@@ -1846,14 +2231,16 @@ class ImageViewer(QMainWindow):
             if current_image is None or len(self.verticalOrderSet) <= 1:
                 return None
 
-            current_index = self.verticalOrderSet.index(current_image.path_nf)
-            if current_index > 0:
-                return self.verticalOrderSet[current_index - 1]
-            if self.loopScroll.isChecked():
-                return self.verticalOrderSet[-1]
-            return self.verticalOrderSet[1]
+            next_path = self.verticalOrderSet.prev_path(
+                current_image.path_nf, loop=self.loopScroll.isChecked()
+            )
+            if next_path is None:
+                next_path = self.verticalOrderSet.next_path(current_image.path_nf)
+            if next_path is None:
+                return None
+            return self.verticalOrderSet.get(next_path)
 
-        current_image = self.mtimeOrderSet.index_map.get(self.currentPath)
+        current_image = self.verticalOrderSet.get(self.currentPath)
         next_image = get_next_image_after_move(current_image)
 
         if not self.transferToDestination(index, move=True):

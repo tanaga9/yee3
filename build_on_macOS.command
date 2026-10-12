@@ -1,10 +1,17 @@
+#!/bin/bash
+set -euo pipefail
 
-# osascript -e 'tell application "Finder" to delete POSIX file "'"$(realpath ./dist)"'"'
-osascript -e 'tell application "Finder" to delete POSIX file "'"$(realpath ./build)"'"'
+cd -- "$(dirname -- "$0")"
 
-iconutil -c icns src/yee3/resources/yee3.iconset
-# pdm run briefcase update macOS
-pdm run briefcase build macOS
-cp build/yee3/macos/app/Yee\ 3.app/Contents/Info.plist ./Info_org.plist
-cp ./Info.plist build/yee3/macos/app/Yee\ 3.app/Contents/.
-# printf "1\n" | pdm run briefcase package macOS
+build_dir="$PWD/build/yee3/macos/app"
+app_bundle="$build_dir/Yee 3.app"
+
+plutil -lint Info.plist
+pdm run python -m briefcase build macOS \
+    --update --update-requirements --update-resources --no-input
+
+cp Info.plist "$app_bundle/Contents/Info.plist"
+codesign --force --sign - --entitlements "$build_dir/Entitlements.plist" "$app_bundle"
+codesign --verify --deep --strict "$app_bundle"
+
+printf '\nBuilt: %s\n' "$app_bundle"
