@@ -6,13 +6,13 @@
 - Keep next/previous image navigation fast.
 - Treat NAS and other high-latency storage as first-class targets.
 - Do not require the user to wait for loading to finish before normal navigation.
-- Do not degrade the interaction model during incremental loading.
 
 ## Guardrails
 
 - Keep a single-image view at the center.
 - Preserve independent vertical and horizontal navigation orders.
 - Do not drift toward thumbnail-first or file-manager-style UI.
+- Keep the workflow minimal. Follow the folder scan lifecycle in `SPEC.md` when changing loading or monitoring.
 
 ## Documentation Policy
 

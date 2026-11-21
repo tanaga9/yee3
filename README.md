@@ -9,8 +9,7 @@ Sleek and fast.
 
 [Xee 3](https://theunarchiver.com/xee) lacks Apple Silicon support and struggles with some image formats, so I first built this with ChatGPT (o3-mini-high), and have continued evolving it with Codex CLI and whichever latest model was available at the time.
 
-Designed for macOS.
-half-hearted Windows support.
+Designed for macOS on Apple Silicon, with limited Windows support.
 
 Concept and design
 ----------------
@@ -25,15 +24,13 @@ Its single-image view can be explored through independent vertical and horizonta
 
 Even with huge folders on SSDs, HDDs, or slower storage such as NAS, the aim is to keep browsing fluid and uninterrupted.
 
-How to build an app on your local Mac
-------------------------------------
+Build on macOS
+--------------
 
-- **Setup the environment**
-    - `pip3 install pdm`
-    - `pdm install --dev`  *(Run again if `pyproject.toml` or `pdm.lock` changes.)*
-- **Build**
+Install Python 3.12 and PDM, then run from the repository root.
 
 ```sh
+pdm install --dev
 ./build_on_macOS.command
 ```
 
@@ -87,10 +84,10 @@ Use Automator for quick app wrapping.
 - Shell: `/bin/zsh`
 - Pass input: `as arguments`
 
-```
-set -euo pipefail
-# pip3 install PyQt5
-python3 ${YEE3_SCRIPT_PATH}/src/yee3/app.py "$@"
-```
+Install the project dependencies with `pdm install` first. Set the repository path below and use the full path to PDM if Automator cannot find it.
 
-Please either modify or configure the YEE3_SCRIPT_PATH part.
+```sh
+set -euo pipefail
+cd "/path/to/yee3"
+PYTHONPATH=src pdm run python -m yee3 "$@"
+```

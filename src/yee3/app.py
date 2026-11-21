@@ -177,6 +177,11 @@ def supportedImageFormats():
     return imageExtensions + list(image_format_extractors.keys())
 
 
+def has_image_extension(name, extensions):
+    _, separator, extension = name.rpartition(".")
+    return bool(separator) and extension.lower() in extensions
+
+
 def transfer_with_unique_name(src, dst_dir, move=False):
     """
     Transfer a file to the specified directory.
@@ -249,8 +254,8 @@ class IterationTimer:
 class SortedList:
     """A simple sorted list implementation using bisect."""
 
-    def __init__(self):
-        self._list = []
+    def __init__(self, sorted_items=()):
+        self._list = list(sorted_items)
 
     def add(self, item):
         """Insert an item while keeping the list sorted."""
@@ -266,6 +271,9 @@ class SortedList:
             self._list.pop(index)
         else:
             raise ValueError(f"{item} not found in SortedList")
+
+    def retain(self, predicate):
+        self._list = [key for key in self._list if predicate(key)]
 
     def clear(self):
         """Clear all elements in the list."""
@@ -341,7 +349,7 @@ class FastOrderedSet:
     """
 
     def __init__(self, iterable=None, key_func=None):
-        """Initialize an ordered set. O(N) if iterable is provided, otherwise O(1)."""
+        """Initialize an ordered set, optionally inserting its initial items."""
         self.items: List[ImageData] = []  # List for index-based access
         self.keys = SortedList()  # Binary search optimized
         self.index_map: Dict[str, ImageData] = {}  # Map paths to objects
@@ -352,17 +360,17 @@ class FastOrderedSet:
             self.update(iterable)
 
     def add(self, item: ImageData):
-        """Add an item while ensuring uniqueness (O(log N))"""
+        """Insert a new path in O(N) worst-case time."""
         if item.path_nf in self.index_map:
             return  # Duplicate, skip insertion
 
         if self.key_func is None:
-            # Append if no custom sorting is required
+            # Insert at a random position if no sorting key is provided.
             index = random.randint(0, len(self.items))
         else:
-            key = self.key_func(item)
+            key = (self.key_func(item), item.path_nf)
             index = self.keys.bisect_left(key)  # Get insertion index (O(log N))
-            self.keys.add(key)  # Maintain sorted order (O(log N))
+            self.keys.add(key)
 
         prev_path = self.items[index - 1].path_nf if index > 0 else None
         next_path = self.items[index].path_nf if index < len(self.items) else None
@@ -377,7 +385,7 @@ class FastOrderedSet:
 
     def update(self, sequence):
         """
-        Add all elements from a sequence to the set. O(N).
+        Insert new paths from a sequence.
 
         - Iterates through the sequence and adds new elements.
         - Duplicates are ignored.
@@ -385,15 +393,57 @@ class FastOrderedSet:
         for item in sequence:
             self.add(item)
 
+    def upsert_batch(self, records):
+        """Apply a scan batch to a keyed order, preserving unchanged positions."""
+        reordered = {}
+        for record in records:
+            path = record.path_nf
+            existing = self.index_map.get(path)
+            if existing is None or self.key_func(existing) != self.key_func(record):
+                reordered[path] = record
+            else:
+                key = (self.key_func(record), path)
+                self.items[self.keys.bisect_left(key)] = record
+                self.index_map[path] = record
+
+        # Rebuild only when changes are numerous relative to the index, so
+        # successive fixed-size batches cannot keep rebuilding a growing order.
+        if len(reordered) < max(64, (len(self.items) + 7) // 8):
+            for path, record in reordered.items():
+                existing = self.index_map.get(path)
+                if existing is not None:
+                    self.remove(existing)
+                self.add(record)
+            return
+
+        entries = [
+            (key, record)
+            for key, record in zip(self.keys, self.items)
+            if record.path_nf not in reordered
+        ]
+        entries.extend(
+            ((self.key_func(record), path), record)
+            for path, record in reordered.items()
+        )
+        entries.sort(key=lambda entry: entry[0])
+        self.clear()
+        self.keys = SortedList(key for key, _ in entries)
+        previous = None
+        for _, record in entries:
+            path = record.path_nf
+            self.items.append(record)
+            self.index_map[path] = record
+            self.prev_map[path] = previous
+            self.next_map[path] = None
+            if previous is not None:
+                self.next_map[previous] = path
+            previous = path
+
     def remove(self, item: ImageData):
-        """
-        Remove the specified element from the set.
-        Raises a KeyError if the element does not exist.
-        """
-        # Check if the element exists in index_map
-        if item.path_nf not in self.index_map:
-            # raise KeyError(f"'{item.path_nf}' not found in FastOrderedSet")
-            return  # idempotent
+        """Remove the stored record for this path, if present."""
+        item = self.index_map.get(item.path_nf)
+        if item is None:
+            return
 
         prev_path = self.prev_map.get(item.path_nf)
         next_path = self.next_map.get(item.path_nf)
@@ -413,11 +463,29 @@ class FastOrderedSet:
 
         # If a key function is set, remove the key from SortedList as well
         if self.key_func is not None:
-            key = self.key_func(item)
+            key = (self.key_func(item), item.path_nf)
             self.keys.remove(key)
 
+    def discard_paths(self, paths):
+        """Remove paths in one pass while preserving the order of survivors."""
+        self.items = [item for item in self.items if item.path_nf not in paths]
+        self.keys.retain(lambda key: key[1] not in paths)
+        previous = None
+        for item in self.items:
+            path = item.path_nf
+            self.prev_map[path] = previous
+            if previous is not None:
+                self.next_map[previous] = path
+            previous = path
+        if previous is not None:
+            self.next_map[previous] = None
+        for path in paths:
+            self.index_map.pop(path, None)
+            self.prev_map.pop(path, None)
+            self.next_map.pop(path, None)
+
     def clear(self):
-        """Remove all elements from the set. O(1)."""
+        """Remove all elements from the set."""
         self.items.clear()
         self.keys.clear()
         self.index_map.clear()
@@ -904,8 +972,8 @@ class ReplaceDialog(QDialog):
 
 
 class ImageLoaderWorker(QThread):
-    imageLoaded = Signal(str)
-    finishedLoading = Signal()
+    imageLoaded = Signal(str, bool)
+    finishedLoading = Signal(bool, object)
 
     def __init__(self, folder, pseudo_random_seed, filePath=None, parent=None):
         super().__init__(parent)
@@ -915,37 +983,36 @@ class ImageLoaderWorker(QThread):
         self.batch_count_threshold = 10
 
     def run(self):
-        imageExtensions = supportedImageFormats()
-
-        is_supported_image_format = lambda name: any(
-            name.lower().endswith("." + ext) for ext in imageExtensions
-        )
-        if self.filePath is not None:
-            imagefile = ImageFile(path=self.filePath)
-            if is_supported_image_format(imagefile.name):
-                if imagefile.stat():
-                    imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
-                    self.imageLoaded.emit(json.dumps([asdict(imageData)]))
-
-        def compute_batch_count(x):
-            min = 10
-            if x <= 0:
-                return min
-            y = 10 * x**-1.16
-            if y <= min:
-                return min
-            return math.ceil(y)
-
-        self.batch_count_threshold = 10
-        data = []
-        last_emit_timestamp = datetime.now()
-        timer = IterationTimer()
+        scan_succeeded = False
+        candidate_names = set()
         try:
+            extensions = set(supportedImageFormats())
+
+            def compute_batch_count(x):
+                min = 10
+                if x <= 0:
+                    return min
+                y = 10 * x**-1.16
+                if y <= min:
+                    return min
+                return math.ceil(y)
+
+            self.batch_count_threshold = 10
+            data = []
+            last_emit_timestamp = datetime.now()
+            timer = IterationTimer()
+            if self.filePath is not None:
+                imagefile = ImageFile(path=self.filePath)
+                if has_image_extension(imagefile.name, extensions):
+                    if imagefile.stat():
+                        imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
+                        self.imageLoaded.emit(json.dumps([asdict(imageData)]), False)
             timer.start()
             for entry in os.scandir(self.folder):
                 # Never use ‘continue’; msleep must run at regular intervals
                 imagefile = ImageFile(entry=entry)
-                if is_supported_image_format(imagefile.name):
+                if has_image_extension(imagefile.name, extensions):
+                    candidate_names.add(imagefile.name)
                     if imagefile.stat():
                         imageData = ImageData.generate(
                             self.pseudo_random_seed, imagefile
@@ -961,18 +1028,19 @@ class ImageLoaderWorker(QThread):
                 ):
                     if len(data) > 0:
                         # handleNewImage
-                        self.imageLoaded.emit(json.dumps(data))
+                        self.imageLoaded.emit(json.dumps(data), True)
                         data = []
                     self.msleep(10)
                     last_emit_timestamp = now
                 timer.start()
             if len(data) > 0:
                 # handleNewImage
-                self.imageLoaded.emit(json.dumps(data))
+                self.imageLoaded.emit(json.dumps(data), True)
+            scan_succeeded = True
         except Exception as e:
             print("Error during folder scanning:", e)
-        # finishLoadingImages
-        self.finishedLoading.emit()
+        finally:
+            self.finishedLoading.emit(scan_succeeded, candidate_names)
 
 
 class ImageViewer(QMainWindow):
@@ -1159,15 +1227,22 @@ class ImageViewer(QMainWindow):
         # Polling fallback for network shares (e.g., Samba) to detect renames
         self._watched_folder = None
         self._last_dir_snapshot = None
+        self._first_poll_after_scan = False
         self._directory_poll_timer = QTimer(self)
         self._directory_poll_timer.timeout.connect(self._poll_directory_changes)
         self._empty_poll_count = 0
         self._empty_poll_threshold = (
             30  # number of consecutive empty polls before stopping
         )
-        # Flag to avoid scheduling multiple reload timers
-        self._reload_timer_pending = False
+        # Require an explicit reload when changes overlap a scan.
+        self._folder_changed_during_scan = False
+        self._reload_was_required = False
         self.selected_file_path = None
+        self._scan_seen_paths = set()
+        self._scan_refresh_path = None
+        self._image_candidates = deque()
+        self._candidate_paths = set()
+        self._candidate_retry_pending = False
 
         self.counter = RecentCounter()
 
@@ -1344,7 +1419,7 @@ class ImageViewer(QMainWindow):
         Create actions for opening a folder, zooming in, zooming out, and resetting the image size.
         """
 
-        self.refreshFolder = QAction("Reload CurrentFolder", self)
+        self.refreshFolder = QAction("Reload Current Folder", self)
         self.refreshFolder.triggered.connect(self.reloadCurrentFolder)
 
         self.copyToAct = QAction("Copy to ...", self)
@@ -1439,6 +1514,9 @@ class ImageViewer(QMainWindow):
 
     def updateWatchStatusLabel(self):
         """Update the watchStatusLabel to reflect Watch/Polling status."""
+        if self._folder_changed_during_scan and not self.lazyLoadingInProgress:
+            self.watchStatusLabel.setText("Reload Current Folder")
+            return
         watch_on = any(self.watcher.directories())
         poll_on = self._directory_poll_timer.isActive()
         if watch_on and poll_on:
@@ -1453,14 +1531,11 @@ class ImageViewer(QMainWindow):
 
     def handlePollToggled(self, checked):
         """Start or stop the directory polling timer based on the toggle state."""
-        if checked:
-            # Resume polling at 2-second intervals
+        if checked and not self.lazyLoadingInProgress and not self._folder_changed_during_scan:
             if not self._directory_poll_timer.isActive():
                 self._directory_poll_timer.start(2000)
         else:
-            # Stop polling if currently active
-            if self._directory_poll_timer.isActive():
-                self._directory_poll_timer.stop()
+            self._directory_poll_timer.stop()
         self.updateWatchStatusLabel()
 
     def openFolder(self):
@@ -1475,21 +1550,20 @@ class ImageViewer(QMainWindow):
         """
         Reload the current folder and refresh the displayed images.
         """
-        if self.currentPath:
-            return self.loadImagesFromFolder(self.currentPath)
+        if self._watched_folder:
+            return self.loadImagesFromFolder(self._watched_folder)
 
     def loadImagesFromFolder(self, path, refresh_random_seed=False):
         """
-        Load all image files from the specified folder, create two sort orders,
-        and display the first image.
+        Scan the folder and reconcile its navigation orders incrementally.
 
         :param path: The path to the folder or file to load images from.
         """
-        # Set the scan start time
-        self._scan_start_time = time.time()
-
         if self.lazyLoadingInProgress:
             return
+
+        self._scan_start_time = time.monotonic()
+        path = os.path.abspath(path)
 
         if os.path.isfile(path):
             filePath = path
@@ -1507,34 +1581,36 @@ class ImageViewer(QMainWindow):
             return
             # raise ValueError("The specified path is neither a file nor a directory.")
 
-        # Update watched folder and initialize snapshot
+        same_folder = self._watched_folder == folderPath
+        self._scan_refresh_path = self.currentPath if same_folder and not filePath else None
         self._watched_folder = folderPath
-        try:
-            if self.pollToggle.isChecked():
-                self._last_dir_snapshot = set(os.listdir(folderPath))
-            else:
-                self._last_dir_snapshot = set()
-        except Exception:
-            self._last_dir_snapshot = set()
+        self._scan_seen_paths.clear()
+        self.resetImageCandidates()
+        self.selected_file_path = (
+            unicodedata.normalize("NFD", filePath) if filePath else None
+        )
+        if not same_folder:
+            self._last_dir_snapshot = None
+        self._first_poll_after_scan = False
 
         self.lazyLoadingInProgress = True
-        self.watcher.removePaths(self.watcher.directories())
+        self._reload_was_required = same_folder and self._folder_changed_during_scan
+        self._folder_changed_during_scan = False
+        if not same_folder:
+            watched_paths = self.watcher.directories()
+            if watched_paths:
+                self.watcher.removePaths(watched_paths)
         self._directory_poll_timer.stop()
         self.updateWatchStatusLabel()
 
-        if not (
-            self.currentPath
-            and os.path.samefile(os.path.dirname(self.currentPath), folderPath)
-        ):
-            # Clear all image sets
+        if not same_folder:
             self.fnameOrderSet.clear()
             self.mtimeOrderSet.clear()
             self.randomOrderSet.clear()
-        else:
-            self.selected_file_path = filePath
-
-        self.currentPath = None
-        self.currentPixmap = None
+            self.currentPath = None
+            self.currentPixmap = None
+            self.imageDisplay.clearData()
+            self.refreshMetadataForCurrentImage()
 
         self.statusBar().showMessage("loading...", 2000)
 
@@ -1547,65 +1623,148 @@ class ImageViewer(QMainWindow):
         self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
         self.imageLoader.start()
 
-    def handleNewImage(self, imageDataListJson):
-        """ """
+    def handleNewImage(self, imageDataListJson, from_scan):
+        orders = (self.fnameOrderSet, self.mtimeOrderSet, self.randomOrderSet)
+        records = [ImageData(**item) for item in json.loads(imageDataListJson)]
+        if from_scan:
+            self._scan_seen_paths.update(record.path_nf for record in records)
+        changes = [
+            record for record in records
+            if self.mtimeOrderSet.get(record.path_nf) != record
+        ]
+        if changes:
+            for order in orders:
+                order.upsert_batch(changes)
 
-        imageDataList = [ImageData(**i) for i in json.loads(imageDataListJson)]
+        if self.selected_file_path is not None:
+            for record in records:
+                if record.path_nf == self.selected_file_path:
+                    self.selected_file_path = None
+                    if self.loadImageFromFile(record) is None:
+                        self._candidate_paths.add(record.path_nf)
+                        self.statusBar().showMessage(f"Unable to open {record.name}", 3000)
+                    break
 
-        existing_image_count = len(self.mtimeOrderSet)
+        if self.currentPath is None and self.selected_file_path is None:
+            self.queueImageCandidates(records)
 
-        self.fnameOrderSet.update(imageDataList)
-        self.mtimeOrderSet.update(imageDataList)
-        self.randomOrderSet.update(imageDataList)
-
-        # Load the first image if no image is currently displayed
-        if (existing_image_count == 0 or self.selected_file_path) and imageDataList:
-            self.loadImageFromFile(imageDataList[0])
-        self.selected_file_path = None
-
-        # self.statusBar().showMessage(f"Found file {imagePath}", 100)
         self.label.setText(
             f"count: {len(self.mtimeOrderSet)} ... ({self.imageLoader.batch_count_threshold})"
         )
 
-    def finishLoadingImages(self):
-        """ """
-        elapsed_time = time.time() - self._scan_start_time
+    def resetImageCandidates(self):
+        self._image_candidates = deque()
+        self._candidate_paths = set()
+        self._candidate_retry_pending = False
+
+    def queueImageCandidates(self, records):
+        candidates = self._image_candidates
+        for record in records:
+            path = record.path_nf
+            if path not in self._candidate_paths:
+                self._candidate_paths.add(path)
+                candidates.append(path)
+        if self._candidate_retry_pending:
+            return
+
+        def try_next():
+            if self._image_candidates is not candidates:
+                return
+            self._candidate_retry_pending = False
+            if self.currentPath is not None:
+                self._candidate_paths.difference_update(candidates)
+                candidates.clear()
+            elif candidates:
+                path = candidates.popleft()
+                record = self.mtimeOrderSet.get(path)
+                if record is None:
+                    self._candidate_paths.discard(path)
+                if record is not None and self.loadImageFromFile(record) is not None:
+                    self._candidate_paths.difference_update(candidates)
+                    candidates.clear()
+                elif candidates:
+                    self._candidate_retry_pending = True
+                    QTimer.singleShot(0, self, try_next)
+
+        try_next()
+
+    def showFirstReadableImage(self, skip_path):
+        self.queueImageCandidates(
+            record for record in self.mtimeOrderSet if record.path_nf != skip_path
+        )
+
+    def finishLoadingImages(self, scan_succeeded, candidate_names):
+        if scan_succeeded:
+            self._last_dir_snapshot = candidate_names
+        elif self._reload_was_required:
+            self._folder_changed_during_scan = True
+        self._reload_was_required = False
+        self._first_poll_after_scan = self._last_dir_snapshot is not None
+
+        failed_path = None
+        if scan_succeeded:
+            missing = {
+                record.path_nf for record in self.mtimeOrderSet
+                if record.path_nf not in self._scan_seen_paths
+            }
+            if missing:
+                for order in (self.mtimeOrderSet, self.fnameOrderSet, self.randomOrderSet):
+                    order.discard_paths(missing)
+
+            if self.currentPath in missing:
+                self.currentPath = None
+            elif self.currentPath and self.currentPath == self._scan_refresh_path:
+                record = self.mtimeOrderSet.get(self.currentPath)
+                if record is not None and self.loadImageFromFile(record) is None:
+                    failed_path = self.currentPath
+                    self.currentPath = None
+
+        if self.currentPath is None:
+            self.currentPixmap = None
+            self.refreshMetadataForCurrentImage()
+            self.imageDisplay.clearData()
+            self.setWindowTitle("Yee3")
+            self.showFirstReadableImage(failed_path)
+
+        self.selected_file_path = None
+        self._scan_refresh_path = None
+        self._scan_seen_paths.clear()
+        elapsed_time = time.monotonic() - self._scan_start_time
         count = len(self.mtimeOrderSet)
 
-        self.statusBar().showMessage("Complete", 3000)
+        message = "Complete" if scan_succeeded else "Unable to finish folder scan"
+        if self._folder_changed_during_scan:
+            if scan_succeeded:
+                message = "Folder changed during scan"
+            self.statusBar().showMessage(f"{message}. Use Reload Current Folder.")
+        else:
+            self.statusBar().showMessage(message, 3000)
         self.label.setText(f"count: {count}")
 
         self.lazyLoadingInProgress = False
-        if self.currentPath:
-            if count < 100 or count / elapsed_time > 1000:
-                self.watcher.addPath(os.path.dirname(self.currentPath))
+        if self._watched_folder:
+            if self._watched_folder not in self.watcher.directories() and (
+                count < 100 or count / elapsed_time > 1000
+            ):
+                self.watcher.addPath(self._watched_folder)
             # Start polling after the folder scan is complete
             if (
                 not self._directory_poll_timer.isActive()
                 and self.pollToggle.isChecked()
+                and not self._folder_changed_during_scan
             ):
                 self._empty_poll_count = 0
                 self._directory_poll_timer.start(2000)  # poll every 2 seconds
             self.updateWatchStatusLabel()
 
-        # If a reload was requested during loading, schedule it 1s after load completes
-        if self._reload_timer_pending:
-
-            def _delayed_reload():
-                self.reloadCurrentFolder()
-                self._reload_timer_pending = False
-
-            QTimer.singleShot(1000, _delayed_reload)
-
     def on_directory_changed(self, path):
-        # Ignore if a reload is already pending or loader still running
-        if self._reload_timer_pending or self.lazyLoadingInProgress:
-            # If loader still running and no reload pending, mark pending
-            if self.lazyLoadingInProgress and not self._reload_timer_pending:
-                self._reload_timer_pending = True
+        if path != self._watched_folder:
             return
-        # No ongoing loading or pending reload: reload immediately
+        if self.lazyLoadingInProgress:
+            self._folder_changed_during_scan = True
+            return
+        if self._folder_changed_during_scan:
+            return
         if not self._directory_poll_timer.isActive() and self.pollToggle.isChecked():
             self._empty_poll_count = 0
             self._directory_poll_timer.start(2000)  # poll every 2 seconds
@@ -1616,22 +1775,33 @@ class ImageViewer(QMainWindow):
         """Poll directory entries to detect renames on network shares."""
         # self.statusBar().showMessage("checking", 1000)
         folder = self._watched_folder
-        if not folder:
+        if not folder or self.lazyLoadingInProgress or self._folder_changed_during_scan:
             return
         try:
-            current = set(os.listdir(folder))
-        except Exception:
-            self._last_dir_snapshot = set()
+            names = os.listdir(folder)
+        except OSError:
             return
-        if self._last_dir_snapshot is None:
+        extensions = set(supportedImageFormats())
+        current = {
+            unicodedata.normalize("NFD", name)
+            for name in names
+            if has_image_extension(name, extensions)
+        }
+
+        previous = self._last_dir_snapshot
+        first_poll_after_scan = self._first_poll_after_scan
+        self._first_poll_after_scan = False
+        if previous is None:
             self._last_dir_snapshot = current
             return
-        added = current - self._last_dir_snapshot
-        removed = self._last_dir_snapshot - current
-        if added or removed:
-            # Trigger handler for directory change
-            self.on_directory_changed(folder)
+        if current != previous:
             self._empty_poll_count = 0
+            if first_poll_after_scan:
+                self._folder_changed_during_scan = True
+                self._directory_poll_timer.stop()
+                self.updateWatchStatusLabel()
+            else:
+                self.on_directory_changed(folder)
         else:
             self._empty_poll_count += 1
             if self._empty_poll_count >= self._empty_poll_threshold:
@@ -1639,7 +1809,6 @@ class ImageViewer(QMainWindow):
                 self._empty_poll_count = 0
                 self.updateWatchStatusLabel()
                 self.statusBar().showMessage("Polling stopped", 1000)
-        self._last_dir_snapshot = current
 
     def loadImageFromFile(self, imageData: ImageData):
         """
@@ -1649,10 +1818,10 @@ class ImageViewer(QMainWindow):
         """
         filePath = imageData.path_nf
         currentPath = unicodedata.normalize("NFD", filePath)
-        self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
         ext = Path(filePath).suffix[1:]
         should_read_metadata = self.metadataDock.isVisible()
         image_bytes = None
+        metadata_read_error = None
 
         # Preserve streaming image reads for formats the metadata parser
         # cannot handle, especially large animations on network storage.
@@ -1665,9 +1834,7 @@ class ImageViewer(QMainWindow):
                 with open(filePath, "rb") as f:
                     image_bytes = f.read()
             except Exception as e:
-                if self.metadataDock.isVisible():
-                    self.metadataPanel.setError(currentPath, ext or "unknown", str(e))
-                image_bytes = None
+                metadata_read_error = str(e)
 
         if ext in image_format_extractors.keys():
             try:
@@ -1694,11 +1861,9 @@ class ImageViewer(QMainWindow):
             else:
                 image = QPixmap(filePath)
         if image.isNull():
-            self.imageDisplay.clearData()
-            if self.metadataDock.isVisible():
-                self.metadataPanel.setPlaceholder("Unable to read image metadata.")
             return None
         else:
+            self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
             self.currentPath = currentPath
             self.currentPixmap = image
             self.imageDisplay.setData(
@@ -1707,7 +1872,9 @@ class ImageViewer(QMainWindow):
             )
             self.adjustImageScale()
             if self.metadataDock.isVisible():
-                if image_bytes is None:
+                if metadata_read_error is not None:
+                    self.metadataPanel.setError(currentPath, ext or "unknown", metadata_read_error)
+                elif image_bytes is None:
                     self.metadataPanel.setPlaceholder("Image metadata is unavailable for this image.")
                 else:
                     metadata = parse_image_metadata_bytes(currentPath, image_bytes)
