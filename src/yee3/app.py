@@ -343,6 +343,13 @@ class ImageData:
         )
 
 
+class DescendingFilename(str):
+    """Reverse lexical comparison while retaining normal string equality."""
+
+    def __lt__(self, other):
+        return str.__gt__(self, other)
+
+
 class FastOrderedSet:
     """
     An ordered set optimized for path-based lookup and next/previous navigation.
@@ -585,7 +592,7 @@ class VerticalGauge(QWidget):
 class HorizontalGauge(QWidget):
     """
     Gauge for horizontal scrolling (displayed at the top of the screen).
-    Positive direction (right scroll) is blue, negative direction (left scroll) is red.
+    Positive values follow the Left arrow and are blue. Negative values follow the Right arrow and are red.
     """
 
     def __init__(self, parent=None):
@@ -1113,6 +1120,7 @@ class ImageViewer(QMainWindow):
         # Install an event filter to capture double-click events.
         self.imageDisplay.installEventFilter(self)
         self.scrollArea.installEventFilter(self)
+        self.scrollArea.viewport().installEventFilter(self)
 
         # Create and always show the status bar.
         self.setStatusBar(QStatusBar(self))
@@ -1160,7 +1168,7 @@ class ImageViewer(QMainWindow):
         # random order: images in random order (can be changed later to filename order).
         self.randomOrderSet = FastOrderedSet(key_func=lambda p: p.pseudo_random_hash)
         # fname order: file name order
-        self.fnameOrderSet = FastOrderedSet(key_func=lambda p: p.name)
+        self.fnameOrderSet = FastOrderedSet(key_func=lambda p: DescendingFilename(p.name))
 
         self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
 
@@ -1910,91 +1918,33 @@ class ImageViewer(QMainWindow):
             self.imageDisplay.setScaleFactor(self.scaleFactor)
             self.imageDisplay.resize(scaledPixmap.size())
 
-    # --- Vertical Navigation (using the currently assigned vertical order) ---
+    def navigateImage(self, order, *, previous):
+        current_path = self.currentPath
+        if current_path is None or order.get(current_path) is None:
+            return False
+
+        # The chronological orders are stored newest first. Up and left
+        # advance through the stored order, toward older images.
+        neighbor = order.next_path if previous else order.prev_path
+        loop = self.loopScroll.isChecked()
+        while (path := neighbor(current_path, loop=loop)) not in (None, current_path):
+            record = order.get(path)
+            if self.loadImageFromFile(record) is not None:
+                return True
+            self.remove(record)
+        return False
+
     def verticalPreviousImage(self):
-        """
-        Show the previous image in the currently assigned vertical order.
-        """
-        if self.verticalOrderSet:
-            currentPath = self.currentPath
-            while len(self.verticalOrderSet) and currentPath:
-                newCurrentPath = self.verticalOrderSet.next_path(
-                    currentPath, loop=self.loopScroll.isChecked()
-                )
-                if newCurrentPath is None:
-                    return False
-                newCurrentImage = self.verticalOrderSet.get(newCurrentPath)
-                if newCurrentImage is None:
-                    return False
-                if self.loadImageFromFile(newCurrentImage) is None:
-                    self.remove(newCurrentImage)
-                else:
-                    return True
-        return None
+        return self.navigateImage(self.verticalOrderSet, previous=True)
 
     def verticalNextImage(self):
-        """
-        Show the next image in the currently assigned vertical order.
-        """
-        if self.verticalOrderSet:
-            currentPath = self.currentPath
-            while len(self.verticalOrderSet) and currentPath:
-                newCurrentPath = self.verticalOrderSet.prev_path(
-                    currentPath, loop=self.loopScroll.isChecked()
-                )
-                if newCurrentPath is None:
-                    return False
-                newCurrentImage = self.verticalOrderSet.get(newCurrentPath)
-                if newCurrentImage is None:
-                    return False
-                if self.loadImageFromFile(newCurrentImage) is None:
-                    self.remove(newCurrentImage)
-                else:
-                    return True
-        return None
-
-    # --- Horizontal Navigation (using the currently assigned horizontal order) ---
-    def horizontalNextImage(self):
-        """
-        Show the next image in the currently assigned horizontal order.
-        """
-        if self.horizontalOrderSet:
-            currentPath = self.currentPath
-            while len(self.horizontalOrderSet) and currentPath:
-                newCurrentPath = self.horizontalOrderSet.next_path(
-                    currentPath, loop=self.loopScroll.isChecked()
-                )
-                if newCurrentPath is None:
-                    return False
-                newCurrentImage = self.horizontalOrderSet.get(newCurrentPath)
-                if newCurrentImage is None:
-                    return False
-                if self.loadImageFromFile(newCurrentImage) is None:
-                    self.remove(newCurrentImage)
-                else:
-                    return True
-        return None
+        return self.navigateImage(self.verticalOrderSet, previous=False)
 
     def horizontalPreviousImage(self):
-        """
-        Show the previous image in the currently assigned horizontal order.
-        """
-        if self.horizontalOrderSet:
-            currentPath = self.currentPath
-            while len(self.horizontalOrderSet) and currentPath:
-                newCurrentPath = self.horizontalOrderSet.prev_path(
-                    currentPath, loop=self.loopScroll.isChecked()
-                )
-                if newCurrentPath is None:
-                    return False
-                newCurrentImage = self.horizontalOrderSet.get(newCurrentPath)
-                if newCurrentImage is None:
-                    return False
-                if self.loadImageFromFile(newCurrentImage) is None:
-                    self.remove(newCurrentImage)
-                else:
-                    return True
-        return None
+        return self.navigateImage(self.horizontalOrderSet, previous=True)
+
+    def horizontalNextImage(self):
+        return self.navigateImage(self.horizontalOrderSet, previous=False)
 
     def keyPressEvent(self, event):
         """
@@ -2021,90 +1971,52 @@ class ImageViewer(QMainWindow):
             super().keyPressEvent(event)
 
     def wheelEvent(self, event):
-        """
-        Handle mouse wheel events:
-          - If vertical delta is dominant, use vertical navigation.
-          - If horizontal delta is dominant, use horizontal navigation.
-        """
-        deltaY = event.angleDelta().y()
-        deltaX = event.angleDelta().x()
+        """Pan a zoomed image or navigate along the dominant scroll axis."""
+        delta = event.angleDelta()
+        if delta.isNull():
+            delta = event.pixelDelta()
+        if delta.isNull():
+            event.ignore()
+            return
+
+        vertical = abs(delta.y()) >= abs(delta.x())
+        if vertical:
+            amount = delta.y()
+            accumulation = self.scrollAccumulationY
+            scrollbar = self.scrollArea.verticalScrollBar()
+            order = self.verticalOrderSet
+        else:
+            amount = delta.x()
+            accumulation = self.scrollAccumulationX
+            scrollbar = self.scrollArea.horizontalScrollBar()
+            order = self.horizontalOrderSet
+        if scrollbar.minimum() != scrollbar.maximum():
+            event.ignore()
+            return
+
+        mode = "free" if self.freeScroll.isChecked() else "limit"
+        settings = scroll_factors_dict[mode]
+        factors = settings["vertical" if vertical else "horizontal"]
+        if amount * accumulation < 0:
+            accumulation = 0
+        limit = factors["max"]
+        accumulation = max(-limit, min(limit, accumulation + amount * factors["scroll"]))
 
         now = datetime.now()
-        elapsed_time_since_last_display = (
-            now - self.last_display_datetime
-        ).total_seconds()
+        elapsed = (now - self.last_display_datetime).total_seconds()
+        if abs(accumulation) >= factors["threshold"] and elapsed > settings["interval"]:
+            self.navigateImage(order, previous=accumulation > 0)
+            accumulation /= factors["release"]
+            self.last_display_datetime = now
 
-        if self.freeScroll.isChecked():
-            scroll_factors = scroll_factors_dict["free"]
+        if vertical:
+            self.scrollAccumulationY = accumulation
+            self.verticalGauge.updateGauge(accumulation)
         else:
-            scroll_factors = scroll_factors_dict["limit"]
-
-            # If zoomed in and the scrollbar is visible, reduce sensitivity
-            if (
-                self.scaleFactor / self.fittedScale >= 1.25
-                and self.scrollArea.verticalScrollBar().maximum() > 0
-            ):
-                threshold = 180
-                if max(abs(deltaY), abs(deltaX)) < threshold:
-                    return
-
-        # Vertical scroll accumulation
-        self.scrollAccumulationY += deltaY * scroll_factors["vertical"]["scroll"]
-        self.scrollAccumulationY = min(
-            self.scrollAccumulationY, scroll_factors["vertical"]["max"]
-        )
-
-        # Horizontal scroll accumulation
-        self.scrollAccumulationX += deltaX * scroll_factors["horizontal"]["scroll"]
-        self.scrollAccumulationX = min(
-            self.scrollAccumulationX, scroll_factors["horizontal"]["max"]
-        )
-
-        self.statusBar().showMessage(
-            f"wheelEvent: {deltaX}, {deltaY} - X: {self.scrollAccumulationX}, Y: {self.scrollAccumulationY}",
-            1000,
-        )
-
-        if elapsed_time_since_last_display > scroll_factors["interval"]:
-            if abs(self.scrollAccumulationY) >= abs(self.scrollAccumulationX):
-                # Vertical scrolling
-                self.verticalGauge.updateGauge(self.scrollAccumulationY)
-
-                if (
-                    abs(self.scrollAccumulationY)
-                    >= scroll_factors["vertical"]["threshold"]
-                ):
-                    if self.scrollAccumulationY > 0:
-                        self.verticalPreviousImage()
-                    else:
-                        self.verticalNextImage()
-
-                    self.scrollAccumulationY /= scroll_factors["vertical"]["release"]
-                    self.last_display_datetime = now
-            else:
-                # Horizontal scrolling
-                self.horizontalGauge.updateGauge(self.scrollAccumulationX)
-
-                if (
-                    abs(self.scrollAccumulationX)
-                    >= scroll_factors["horizontal"]["threshold"]
-                ):
-                    if self.scrollAccumulationX > 0:
-                        self.horizontalPreviousImage()
-                    else:
-                        self.horizontalNextImage()
-
-                    self.scrollAccumulationX /= scroll_factors["horizontal"]["release"]
-                    self.last_display_datetime = now
-
-        # Update the gauge
-        self.verticalGauge.updateGauge(self.scrollAccumulationY)
-        self.horizontalGauge.updateGauge(self.scrollAccumulationX)
-
-        # Start the timer (execute the decay process)
+            self.scrollAccumulationX = accumulation
+            self.horizontalGauge.updateGauge(accumulation)
         if not self.decayTimer.isActive():
             self.decayTimer.start()
-
         event.accept()
 
     def decayScrollValues(self):
@@ -2394,31 +2306,19 @@ class ImageViewer(QMainWindow):
         """
         Move the current image file to the move destination folder for the given index.
         """
-        def get_next_image_after_move(current_image):
-            if current_image is None or len(self.verticalOrderSet) <= 1:
-                return None
-
-            next_path = self.verticalOrderSet.prev_path(
-                current_image.path_nf, loop=self.loopScroll.isChecked()
-            )
-            if next_path is None:
-                next_path = self.verticalOrderSet.next_path(current_image.path_nf)
-            if next_path is None:
-                return None
-            return self.verticalOrderSet.get(next_path)
-
         current_image = self.verticalOrderSet.get(self.currentPath)
-        next_image = get_next_image_after_move(current_image)
-
         if not self.transferToDestination(index, move=True):
             return False
 
-        if current_image is None:
-            return True
-
-        self.remove(current_image)
-        if next_image is not None:
-            self.loadImageFromFile(next_image)
+        if current_image is not None:
+            # Use the same direction and loop behavior as Down, then try Up
+            # if there is no readable image in the preferred direction.
+            if not self.verticalNextImage():
+                self.verticalPreviousImage()
+            self.remove(current_image)
+            if self.currentPath is None:
+                self.imageDisplay.clearData()
+                self.setWindowTitle("Yee3")
         return True
 
     def onCopyListDoubleClicked(self, item):
@@ -2437,11 +2337,15 @@ class ImageViewer(QMainWindow):
 
     def eventFilter(self, obj, event):
         """
-        Event filter to capture double-click events on the image label and scroll area.
+        Route wheel navigation and handle double-clicks in the image area.
         On a double-click, resize the window:
           - Set height to the maximum available screen height.
           - Adjust width to maintain the aspect ratio of the currently displayed image.
         """
+        if obj is self.scrollArea.viewport() and event.type() == QEvent.Wheel:
+            self.wheelEvent(event)
+            return event.isAccepted()
+
         if (
             obj == self.imageDisplay or obj == self.scrollArea
         ) and event.type() == QEvent.MouseButtonDblClick:

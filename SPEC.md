@@ -16,7 +16,7 @@ A folder is one collection of image records (`ImageData`) with three maintained 
 
 Base order sets:
 - `mtimeOrderSet`: newest-first order by file modified time
-- `fnameOrderSet`: lexical order by file name
+- `fnameOrderSet`: descending lexical order by file name
 - `randomOrderSet`: stable pseudo-random order
 
 Active navigation bindings:
@@ -24,6 +24,8 @@ Active navigation bindings:
 - `horizontalOrderSet`: the order currently assigned to horizontal navigation
 
 Each axis uses its selected order independently. Equal sort keys are resolved by path.
+Up and left move toward the end of the selected order. Down and right move toward its start.
+Arrow keys and scrolling use the same directions for image navigation. When the zoomed image can pan along the scroll axis, scrolling pans within the image.
 
 ```mermaid
 flowchart LR

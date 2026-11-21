@@ -9,8 +9,10 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QMovie, QPainter, QPdfWriter
+from PySide6.QtGui import QMovie, QPainter, QPdfWriter, QWheelEvent
 
 from yee3.app import FastOrderedSet, ImageData, ImageViewer, OSType
 
@@ -387,6 +389,60 @@ class ImageLoadingTests(unittest.TestCase):
         self.wait_for_scan()
         self.assertNotEqual(self.viewer.watchStatusLabel.text(), "Reload Current Folder")
         self.assertIsNone(self.viewer.mtimeOrderSet.get(second.path_nf))
+
+    def test_timestamp_filenames_follow_mtime_arrow_directions(self):
+        older = self.make_image("20261121_0900.png", "PNG", mtime=1)
+        middle = self.make_image("20261121_1000.png", "PNG", mtime=2)
+        newer = self.make_image("20261121_1100.png", "PNG", mtime=3)
+        for order in (self.viewer.fnameOrderSet, self.viewer.mtimeOrderSet):
+            self.viewer.verticalOrderSet = order
+            self.viewer.horizontalOrderSet = order
+            for key, expected in (
+                (Qt.Key_Up, older), (Qt.Key_Left, older),
+                (Qt.Key_Down, newer), (Qt.Key_Right, newer),
+            ):
+                with self.subTest(order=order, key=key):
+                    self.viewer.loadImageFromFile(middle)
+                    QTest.keyClick(self.viewer, key)
+                    self.assertEqual(self.viewer.currentPath, expected.path_nf)
+
+    def test_wheel_and_arrow_keys_use_the_same_image_directions(self):
+        older = self.make_image("20261121_0900.png", "PNG", mtime=1)
+        middle = self.make_image("20261121_1000.png", "PNG", mtime=2)
+        newer = self.make_image("20261121_1100.png", "PNG", mtime=3)
+        self.viewer.verticalOrderSet = self.viewer.mtimeOrderSet
+        self.viewer.horizontalOrderSet = self.viewer.fnameOrderSet
+        self.viewer.freeScroll.setChecked(True)
+        viewport = self.viewer.scrollArea.viewport()
+
+        for delta, expected in (
+            (QPoint(0, 240), older), (QPoint(240, 0), older),
+            (QPoint(0, -240), newer), (QPoint(-240, 0), newer),
+        ):
+            with self.subTest(delta=delta):
+                self.viewer.loadImageFromFile(middle)
+                self.viewer.scrollAccumulationX = 0
+                self.viewer.scrollAccumulationY = 0
+                event = QWheelEvent(
+                    QPointF(5, 5), QPointF(viewport.mapToGlobal(QPoint(5, 5))),
+                    QPoint(), delta, Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+                )
+                QApplication.sendEvent(viewport, event)
+                self.assertEqual(self.viewer.currentPath, expected.path_nf)
+
+    def test_move_selects_the_same_image_as_down_and_skips_unreadable_candidates(self):
+        self.make_image("older.png", "PNG", mtime=1)
+        middle = self.make_image("middle.png", "PNG", mtime=2)
+        broken = self.make_image("broken.png", "PNG", mtime=3)
+        newer = self.make_image("newer.png", "PNG", mtime=4)
+        Path(broken.path_nf).write_bytes(b"invalid image")
+        self.viewer.loadImageFromFile(middle)
+
+        with patch.object(self.viewer, "transferToDestination", return_value=True):
+            self.assertTrue(self.viewer.moveToDestination(1))
+
+        self.assertEqual(self.viewer.currentPath, newer.path_nf)
+        self.assertIsNone(self.viewer.mtimeOrderSet.get(middle.path_nf))
 
     def test_info_preserves_tga_navigation(self):
         first = self.make_image("first.png", "PNG", mtime=1)
