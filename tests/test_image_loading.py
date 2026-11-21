@@ -181,6 +181,37 @@ class ImageLoadingTests(unittest.TestCase):
         self.assertIs(self.viewer.currentPixmap, pixmap)
         self.assertEqual(self.viewer.windowTitle(), title)
 
+    def test_folder_alias_keeps_current_image_and_reuses_indexed_paths(self):
+        folder = Path(self.temp.name) / "images"
+        folder.mkdir()
+        alias = Path(self.temp.name) / "alias"
+        try:
+            alias.symlink_to(folder, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"Directory symlinks unavailable: {error}")
+
+        first = folder / "first.png"
+        second = folder / "second.png"
+        for path in (first, second):
+            Image.new("RGB", (8, 12)).save(path)
+        (folder / "broken.png").write_bytes(b"invalid image")
+        self.viewer.loadImagesFromFolder(str(first))
+        self.wait_for_scan()
+        pixmap = self.viewer.currentPixmap
+
+        self.viewer.loadImagesFromFolder(str(alias / "broken.png"))
+        self.wait_for_scan()
+        self.assertEqual(self.viewer.currentPath, str(first))
+        self.assertIs(self.viewer.currentPixmap, pixmap)
+
+        self.viewer.loadImagesFromFolder(str(alias / second.name))
+        self.wait_for_scan()
+        self.assertEqual(self.viewer.currentPath, str(second))
+        self.assertEqual(
+            {record.path_nf for record in self.viewer.mtimeOrderSet},
+            {str(first), str(second), str(folder / "broken.png")},
+        )
+
     def test_initial_batch_yields_between_failed_candidates(self):
         corrupt = Path(self.temp.name) / "corrupt.png"
         corrupt.write_bytes(b"invalid image")

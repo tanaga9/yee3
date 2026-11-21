@@ -1597,6 +1597,16 @@ class ImageViewer(QMainWindow):
             # raise ValueError("The specified path is neither a file nor a directory.")
 
         same_folder = self._watched_folder == folderPath
+        if self._watched_folder is not None and not same_folder:
+            try:
+                same_folder = os.path.samefile(self._watched_folder, folderPath)
+            except OSError:
+                pass
+            if same_folder:
+                # Reuse the spelling already used by the watcher and indexes.
+                folderPath = self._watched_folder
+                if filePath is not None:
+                    filePath = os.path.join(folderPath, os.path.basename(filePath))
         self._scan_refresh_path = self.currentPath if same_folder and not filePath else None
         self._watched_folder = folderPath
         self._scan_seen_paths.clear()
