@@ -1,3 +1,4 @@
+import errno
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +37,33 @@ class ReleasePublicationTests(unittest.TestCase):
                 release_workspace.publish(self.source, self.target, self.artifact)
         self.assert_published_version("old")
         self.assertTrue(self.source.is_dir())
+
+    def test_cleanup_failure_keeps_new_build_and_unblocks_next_publish(self):
+        backup = self.target.parent / ".previous-build"
+        rmtree = release_workspace.shutil.rmtree
+
+        def remove_directory(path, *args, **kwargs):
+            if Path(path) == backup:
+                raise OSError(errno.ENOTEMPTY, "Directory not empty")
+            return rmtree(path, *args, **kwargs)
+
+        with (
+            patch.object(release_workspace.shutil, "rmtree", side_effect=remove_directory),
+            patch("sys.stderr") as stderr,
+        ):
+            release_workspace.publish(self.source, self.target, self.artifact)
+
+        self.assert_published_version("new")
+        self.assertFalse(backup.exists())
+        leftovers = list(self.target.parent.glob(".previous-build-*"))
+        self.assertEqual(len(leftovers), 1)
+        self.assertEqual((leftovers[0] / "version").read_text(), "old")
+        stderr.write.assert_called()
+
+        self.source.mkdir()
+        (self.source / "version").write_text("next")
+        release_workspace.publish(self.source, self.target)
+        self.assertEqual((self.target / "version").read_text(), "next")
 
     def test_logging_failure_after_replacement_preserves_new_release(self):
         with patch("builtins.print", side_effect=BrokenPipeError):

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import tomllib
+from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +71,16 @@ def publish(source: Path, target: Path, artifact: Path | None = None) -> None:
             raise
         # Publication is committed. Cleanup failures must not roll it back.
         if backup.exists():
-            shutil.rmtree(backup)
+            try:
+                shutil.rmtree(backup)
+            except OSError as error:
+                # Keep the recovery path free once publication has succeeded.
+                leftover = backup.with_name(f".previous-build-{uuid4().hex}")
+                backup.rename(leftover)
+                print(
+                    f"Previous build cleanup incomplete. Leftovers kept at {leftover}: {error}",
+                    file=sys.stderr,
+                )
 
     if candidate is not None:
         print(f"Packaged: {destination}")
