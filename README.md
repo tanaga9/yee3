@@ -39,6 +39,26 @@ How to build an app on your local Mac
 
 GitHub Actions uses the same macOS build script, then packages the app.
 
+Release builds exclude the unused Qt browser engine, Python bindings, and
+development tools. Image plugins (including PDF) and GIF/WebP playback are
+preserved and checked against the packaged dependencies before signing or
+packaging. macOS releases target Apple Silicon (arm64); build them on an
+Apple Silicon Mac. The bundled Python and Qt binaries are also trimmed to arm64.
+Release builds include only Git-tracked source files and replace the previous
+build after validation. On macOS, this includes starting the signed app with
+its bundled Python. On Windows, run `build_on_windows.bat`.
+
+Use `./build_on_macOS.command --package` or `build_on_windows.bat --package`
+to create a DMG or MSI in `dist/`. This packages the validated build in its
+temporary workspace. Briefcase installs runtime dependencies using versions
+from `pdm.lock`.
+
+If a build is forcibly stopped during replacement, first confirm that no
+release build is still running. In `build/yee3/macos` or `build/yee3/windows`,
+rename `.previous-build` to `app` if `app` is missing. If both exist, keep
+the backup separately until you have verified `app`. Remove the empty
+`.release-publish.lock` directory before retrying.
+
 The `.icns` and `.ico` icons are committed build inputs. After changing the PNGs
 in `src/yee3/resources/yee3.iconset`, regenerate and commit both icons:
 

@@ -1,5 +1,6 @@
 import os
 import sys
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 from Foundation import NSObject
 from Cocoa import NSApp
@@ -46,6 +47,9 @@ def main():
     #     + str(sys.argv),
     # )
     NSApp.setDelegate_(delegate)
+
+    if os.environ.get("YEE3_CHECK_STARTUP") == "1":
+        QTimer.singleShot(0, app.quit)
 
     sys.exit(app.exec())
 
