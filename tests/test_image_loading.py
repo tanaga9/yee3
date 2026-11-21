@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import time
+from threading import Event
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,17 +10,17 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Qt
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QMovie, QPainter, QPdfWriter, QShortcut, QWheelEvent
 
-from yee3.app import FastOrderedSet, ImageData, ImageViewer, OSType
+from yee3.app import FastOrderedSet, ImageData, ImageLoaderWorker, ImageViewer, ImageViewerApplication, OSType
 
 
 class ImageLoadingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.qt_app = QApplication.instance() or QApplication([])
+        cls.qt_app = QApplication.instance() or ImageViewerApplication([])
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -154,7 +155,6 @@ class ImageLoadingTests(unittest.TestCase):
     def test_readable_image_fallback_yields_between_attempts(self):
         first = self.make_image("first.png", "PNG", mtime=2)
         second = self.make_image("second.png", "PNG", mtime=1)
-        self.viewer.imageLoader = object()
         load = self.viewer.loadImageFromFile
         with patch.object(
             self.viewer, "loadImageFromFile",
@@ -216,7 +216,7 @@ class ImageLoadingTests(unittest.TestCase):
         corrupt = Path(self.temp.name) / "corrupt.png"
         corrupt.write_bytes(b"invalid image")
         readable = self.make_image("readable.png", "PNG")
-        self.viewer.imageLoader = type("Loader", (), {"batch_count_threshold": 10})()
+        self.viewer.imageLoader = ImageLoaderWorker(self.temp.name, self.viewer.pseudo_random_seed)
         batch = [
             {"name": path.name, "path_nf": str(path), "st_mtime": 1, "pseudo_random_hash": path.name}
             for path in (corrupt, Path(readable.path_nf))
@@ -557,6 +557,71 @@ class ImageLoadingTests(unittest.TestCase):
                 self.assertLessEqual(abs(viewport.width() - image.width()), 2)
                 self.assertLessEqual(abs(viewport.height() - image.height()), 2)
                 self.assertTrue(self.viewer.screen().availableGeometry().contains(frame))
+
+    def test_close_remains_responsive_until_active_scan_exits(self):
+        entered_scan = Event()
+        release_scan = Event()
+        scandir = os.scandir
+
+        def wait_in_scan(folder):
+            entered_scan.set()
+            release_scan.wait(5)
+            return scandir(folder)
+
+        self.viewer.pollToggle.setChecked(True)
+        with patch("yee3.app.os.scandir", side_effect=wait_in_scan):
+            self.viewer.loadImagesFromFolder(self.temp.name)
+            try:
+                self.assertTrue(entered_scan.wait(3))
+                worker = self.viewer.imageLoader
+                self.assertFalse(self.viewer.close())
+                self.assertTrue(worker.isInterruptionRequested())
+                self.assertTrue(worker.isRunning())
+                self.assertTrue(self.viewer.isVisible())
+                callback = Event()
+                QTimer.singleShot(0, callback.set)
+                self.qt_app.processEvents()
+                self.assertTrue(callback.is_set())
+            finally:
+                release_scan.set()
+
+            self.assertTrue(worker.wait(5000))
+            self.qt_app.processEvents()
+
+        self.assertFalse(self.viewer.isVisible())
+        self.assertFalse(self.viewer.lazyLoadingInProgress)
+        self.assertFalse(self.viewer._directory_poll_timer.isActive())
+
+    def test_quit_requests_close_for_every_scanning_window(self):
+        with patch.object(ImageViewer, "loadSettings"):
+            other = ImageViewer(OSType.LINUX)
+        other.saveSettings = lambda: None
+        self.addCleanup(other.close)
+        other.show()
+
+        release_scan = Event()
+        scandir = os.scandir
+
+        def wait_in_scan(folder):
+            release_scan.wait(5)
+            return scandir(folder)
+
+        viewers = (self.viewer, other)
+        with patch("yee3.app.os.scandir", side_effect=wait_in_scan):
+            try:
+                for viewer in viewers:
+                    viewer.loadImagesFromFolder(self.temp.name)
+                QApplication.sendEvent(self.qt_app, QEvent(QEvent.Quit))
+                for viewer in viewers:
+                    self.assertTrue(viewer.imageLoader.isInterruptionRequested())
+            finally:
+                release_scan.set()
+
+            for viewer in viewers:
+                self.assertTrue(viewer.imageLoader.wait(5000))
+            self.qt_app.processEvents()
+
+        self.assertFalse(any(viewer.isVisible() for viewer in viewers))
 
     def test_info_preserves_tga_navigation(self):
         first = self.make_image("first.png", "PNG", mtime=1)

@@ -1,12 +1,10 @@
 import sys
 
-from PySide6.QtWidgets import QApplication
-
-from yee3.app import initialize_image_viewer, OSType
+from yee3.app import ImageViewerApplication, OSType, initialize_image_viewer
 
 
 def main():
-    app = QApplication(sys.argv)
+    app = ImageViewerApplication(sys.argv)
 
     imagePath = sys.argv[1] if len(sys.argv) > 1 else None
     if imagePath:

@@ -993,6 +993,8 @@ class ImageLoaderWorker(QThread):
         scan_succeeded = False
         candidate_names = set()
         try:
+            if self.isInterruptionRequested():
+                return
             extensions = set(supportedImageFormats())
 
             def compute_batch_count(x):
@@ -1014,9 +1016,12 @@ class ImageLoaderWorker(QThread):
                     if imagefile.stat():
                         imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
                         self.imageLoaded.emit(json.dumps([asdict(imageData)]), False)
+            if self.isInterruptionRequested():
+                return
             timer.start()
             for entry in os.scandir(self.folder):
-                # Never use ‘continue’; msleep must run at regular intervals
+                if self.isInterruptionRequested():
+                    return
                 imagefile = ImageFile(entry=entry)
                 if has_image_extension(imagefile.name, extensions):
                     candidate_names.add(imagefile.name)
@@ -1040,8 +1045,9 @@ class ImageLoaderWorker(QThread):
                     self.msleep(10)
                     last_emit_timestamp = now
                 timer.start()
-            if len(data) > 0:
-                # handleNewImage
+            if self.isInterruptionRequested():
+                return
+            if data:
                 self.imageLoaded.emit(json.dumps(data), True)
             scan_succeeded = True
         except Exception as e:
@@ -1237,6 +1243,9 @@ class ImageViewer(QMainWindow):
         self.decayTimer.start(50)  # Called every 50ms
 
         self.lazyLoadingInProgress = False
+        self.imageLoader = None
+        self._closing = False
+        QApplication.instance().aboutToQuit.connect(self.stopFolderScan)
         self.watcher = QFileSystemWatcher()
         self.watcher.directoryChanged.connect(self.on_directory_changed)
         # Polling fallback for network shares (e.g., Samba) to detect renames
@@ -1574,7 +1583,7 @@ class ImageViewer(QMainWindow):
 
         :param path: The path to the folder or file to load images from.
         """
-        if self.lazyLoadingInProgress:
+        if self._closing or self.lazyLoadingInProgress:
             return
 
         self._scan_start_time = time.monotonic()
@@ -1646,9 +1655,12 @@ class ImageViewer(QMainWindow):
         )
         self.imageLoader.imageLoaded.connect(self.handleNewImage)
         self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
+        self.imageLoader.finished.connect(self.closeAfterFolderScan)
         self.imageLoader.start()
 
     def handleNewImage(self, imageDataListJson, from_scan):
+        if self._closing:
+            return
         orders = (self.fnameOrderSet, self.mtimeOrderSet, self.randomOrderSet)
         records = [ImageData(**item) for item in json.loads(imageDataListJson)]
         if from_scan:
@@ -1719,6 +1731,11 @@ class ImageViewer(QMainWindow):
         )
 
     def finishLoadingImages(self, scan_succeeded, candidate_names):
+        if self._closing:
+            return
+        if self.imageLoader is not None:
+            # The result signal can arrive just before QThread exits.
+            self.imageLoader.wait()
         if scan_succeeded:
             self._last_dir_snapshot = candidate_names
         elif self._reload_was_required:
@@ -1783,7 +1800,7 @@ class ImageViewer(QMainWindow):
             self.updateWatchStatusLabel()
 
     def on_directory_changed(self, path):
-        if path != self._watched_folder:
+        if self._closing or path != self._watched_folder:
             return
         if self.lazyLoadingInProgress:
             self._folder_changed_during_scan = True
@@ -2149,10 +2166,33 @@ class ImageViewer(QMainWindow):
         super().resizeEvent(event)
         self.adjustImageScale()
 
+    def requestFolderScanStop(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._directory_poll_timer.stop()
+        self.resetImageCandidates()
+        if self.imageLoader is not None:
+            self.imageLoader.requestInterruption()
+
+    def stopFolderScan(self):
+        self.requestFolderScanStop()
+        if self.imageLoader is not None:
+            self.imageLoader.wait()
+        self.lazyLoadingInProgress = False
+
+    def closeAfterFolderScan(self):
+        if self._closing and self.isVisible():
+            self.close()
+
     def closeEvent(self, event):
-        """
-        Save window settings and copy destination assignments when the application is closed.
-        """
+        self.requestFolderScanStop()
+        if self.imageLoader is not None and self.imageLoader.isRunning():
+            event.ignore()
+            self.statusBar().showMessage("Waiting for folder scan to stop…")
+            return
+
+        self.lazyLoadingInProgress = False
         self.saveSettings()
         super().closeEvent(event)
 
@@ -2491,6 +2531,26 @@ class ImageViewer(QMainWindow):
         vbar.setValue(newVValue)
 
 
+class ImageViewerApplication(QApplication):
+    def event(self, event):
+        if event.type() == QEvent.Quit:
+            viewers = [
+                window for window in self.topLevelWidgets()
+                if isinstance(window, ImageViewer) and window.isVisible()
+            ]
+            if any(
+                window.imageLoader is not None and window.imageLoader.isRunning()
+                for window in viewers
+            ):
+                # Qt stops closing windows at the first deferred close. Send
+                # the request to all of them so the last close can finish quit.
+                event.ignore()
+                for window in viewers:
+                    window.close()
+                return True
+        return super().event(event)
+
+
 def get_os_type():
     system_name = platform.system().lower()
     if "windows" in system_name:
@@ -2516,7 +2576,7 @@ def initialize_image_viewer(imagePath=None, os_type: OSType = get_os_type()):
 
 
 def main():
-    app = QApplication(sys.argv)
+    app = ImageViewerApplication(sys.argv)
     imagePath = sys.argv[1] if len(sys.argv) > 1 else None
     viewer = initialize_image_viewer(imagePath)
     sys.exit(app.exec())
