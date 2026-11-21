@@ -1119,7 +1119,6 @@ class ImageViewer(QMainWindow):
 
         # Install an event filter to capture double-click events.
         self.imageDisplay.installEventFilter(self)
-        self.scrollArea.installEventFilter(self)
         self.scrollArea.viewport().installEventFilter(self)
 
         # Create and always show the status bar.
@@ -2359,42 +2358,40 @@ class ImageViewer(QMainWindow):
         else:
             self.selectDestination(index, move=True)
 
+    def fitWindowToImage(self):
+        if not self.currentPixmap:
+            return
+
+        self.layout().activate()
+        screen = self.screen().availableGeometry()
+        frame = self.frameGeometry()
+        frame_extra = frame.size() - self.size()
+        # Measure the layout without scrollbars from the current zoom level.
+        layout_extra = self.size() - self.scrollArea.maximumViewportSize()
+        available = screen.size() - frame_extra - layout_extra
+        if available.isEmpty():
+            return
+
+        image_size = self.currentPixmap.size().scaled(available, Qt.KeepAspectRatio)
+        self.resize(image_size + layout_extra)
+        frame_size = self.size() + frame_extra
+        centered_x = frame.left() + (frame.width() - frame_size.width()) // 2
+        x = max(screen.left(), min(centered_x, screen.right() - frame_size.width() + 1))
+        y = max(screen.top(), min(frame.top(), screen.bottom() - frame_size.height() + 1))
+        position = QPoint(x, y)
+        if position != frame.topLeft():
+            self.move(position)
+        self.adjustImageScale()
+
     def eventFilter(self, obj, event):
-        """
-        Route wheel navigation and handle double-clicks in the image area.
-        On a double-click, resize the window:
-          - Set height to the maximum available screen height.
-          - Adjust width to maintain the aspect ratio of the currently displayed image.
-        """
         if obj is self.scrollArea.viewport() and event.type() == QEvent.Wheel:
             self.wheelEvent(event)
             return event.isAccepted()
 
-        if (
-            obj == self.imageDisplay or obj == self.scrollArea
-        ) and event.type() == QEvent.MouseButtonDblClick:
-            screen_geometry = QApplication.primaryScreen().availableGeometry()
-            screen_height = screen_geometry.height()
-            window_center_x = self.geometry().center().x()
-
-            status_bar_height = self.statusBar().height()
-            adjusted_height = screen_height - status_bar_height
-
-            if self.currentPixmap:
-                image_size = self.currentPixmap.size()
-                aspect_ratio = image_size.width() / image_size.height()
-                new_width = int(adjusted_height * aspect_ratio)
-            else:
-                new_width = self.width()
-
-            new_x = window_center_x - (new_width // 2)
-            new_y = self.geometry().y()
-            self.move(new_x, new_y)
-            self.resize(new_width, adjusted_height)
-
-            self.adjustImageScale()
-            # self.scaleFactor = self.fittedScale
-
+        if event.type() == QEvent.MouseButtonDblClick and (
+            obj is self.imageDisplay or obj is self.scrollArea.viewport()
+        ):
+            self.fitWindowToImage()
             return True
 
         return super().eventFilter(obj, event)

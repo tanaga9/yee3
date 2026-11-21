@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QKeyEvent, QKeySequence, QMovie, QPainter, QPdfWriter, QShortcut, QWheelEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QMovie, QPainter, QPdfWriter, QShortcut, QWheelEvent
 
 from yee3.app import FastOrderedSet, ImageData, ImageViewer, OSType
 
@@ -491,6 +491,41 @@ class ImageLoadingTests(unittest.TestCase):
             self.assertEqual(destinations, {"2": self.temp.name})
             self.assertIn("(not set)", widget.item(0).text())
             self.assertTrue(Path(self.temp.name).is_dir())
+
+    def test_double_click_fits_image_with_docks_and_keeps_window_position(self):
+        path = Path(self.temp.name) / "portrait.png"
+        Image.new("RGB", (300, 450), "red").save(path)
+        self.viewer.loadImageFromFile(ImageData(path.name, str(path), 0, path.name))
+        docks = (self.viewer.metadataDock, self.viewer.copyDock, self.viewer.moveDock)
+
+        for shown in ((), *[(dock,) for dock in docks], docks):
+            with self.subTest(docks=[dock.windowTitle() for dock in shown]):
+                for dock in docks:
+                    dock.setVisible(dock in shown)
+                self.viewer.resize(760, 550)
+                self.viewer.move(10, 30)
+                self.qt_app.processEvents()
+
+                target = self.viewer.imageDisplay
+                for attempt in range(4):
+                    event = QMouseEvent(
+                        QEvent.MouseButtonDblClick, QPointF(5, 5),
+                        QPointF(target.mapToGlobal(QPoint(5, 5))),
+                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+                    )
+                    QApplication.sendEvent(target, event)
+                    self.qt_app.processEvents()
+                    frame = self.viewer.frameGeometry()
+                    if attempt == 0:
+                        fitted_frame = frame
+                    else:
+                        self.assertEqual(frame, fitted_frame)
+
+                viewport = self.viewer.scrollArea.viewport().size()
+                image = target.size()
+                self.assertLessEqual(abs(viewport.width() - image.width()), 2)
+                self.assertLessEqual(abs(viewport.height() - image.height()), 2)
+                self.assertTrue(self.viewer.screen().availableGeometry().contains(frame))
 
     def test_info_preserves_tga_navigation(self):
         first = self.make_image("first.png", "PNG", mtime=1)
