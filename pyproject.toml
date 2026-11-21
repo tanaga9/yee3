@@ -6,11 +6,13 @@ authors = [
     {name = "tanaga9", email = "tanaga9@users.noreply.github.com"},
 ]
 dependencies = [
+    # Keep Addons for QtPdf's image plugin; release builds trim unused files.
     "PySide6==6.9.1",
     "pyobjc-framework-Cocoa>=11.0; sys_platform == 'darwin'",
     # "pywin32; sys_platform == 'win32'"
     "pillow>=11.1.0",
-    "pillow-avif-plugin>=1.4.6"
+    "pillow-avif-plugin>=1.4.6",
+    "std-nslog~=1.0.3; sys_platform == 'darwin'",
 ]
 requires-python = "==3.12.*"
 readme = "README.md"
@@ -22,6 +24,7 @@ distribution = false
 [dependency-groups]
 dev = [
     "briefcase>=0.3.22",
+    "dmgbuild>=1.6.7; sys_platform == 'darwin'",
     "tomlkit<1,>=0.13",
 ]
 
@@ -40,7 +43,4 @@ sources = [
 icon = "src/yee3/resources/yee3"
 
 [tool.briefcase.app.yee3.macOS]
-universal_build = true
-requires = [
-    "std-nslog~=1.0.3",
-]
+universal_build = false

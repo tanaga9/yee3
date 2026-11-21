@@ -28,12 +28,8 @@ jobs:
           pip install pdm
           pdm install --dev
 
-      - name: Build app
-        run: ./build_on_macOS.command
-
-      - name: Package app
-        run: |
-          pdm run python -m briefcase package macOS --adhoc-sign --no-input
+      - name: Build and package app
+        run: ./build_on_macOS.command --package
 
       - name: Upload built app
         uses: actions/upload-artifact@v4
@@ -107,13 +103,8 @@ jobs:
           pip install pdm
           pdm install --dev
 
-      - name: Build app with Briefcase for Windows
-        run: |
-          pdm run python -m briefcase build windows
-
-      - name: Package app for Windows
-        run: |
-          pdm run python -m briefcase package windows
+      - name: Build and package app for Windows
+        run: ./build_on_windows.bat --package
 
       - name: Upload built app artifact (Windows)
         uses: actions/upload-artifact@v4
