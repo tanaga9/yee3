@@ -9,10 +9,9 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QMovie, QPainter, QPdfWriter, QWheelEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QMovie, QPainter, QPdfWriter, QShortcut, QWheelEvent
 
 from yee3.app import FastOrderedSet, ImageData, ImageViewer, OSType
 
@@ -403,7 +402,8 @@ class ImageLoadingTests(unittest.TestCase):
             ):
                 with self.subTest(order=order, key=key):
                     self.viewer.loadImageFromFile(middle)
-                    QTest.keyClick(self.viewer, key)
+                    event = QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier)
+                    QApplication.sendEvent(self.viewer, event)
                     self.assertEqual(self.viewer.currentPath, expected.path_nf)
 
     def test_wheel_and_arrow_keys_use_the_same_image_directions(self):
@@ -443,6 +443,54 @@ class ImageLoadingTests(unittest.TestCase):
 
         self.assertEqual(self.viewer.currentPath, newer.path_nf)
         self.assertIsNone(self.viewer.mtimeOrderSet.get(middle.path_nf))
+
+    def test_unset_destination_double_click_only_configures(self):
+        record = self.make_image("source.png", "PNG")
+        self.viewer.loadImageFromFile(record)
+        folder = Path(self.temp.name) / "destination"
+        folder.mkdir()
+
+        for widget, destinations in (
+            (self.viewer.copyList, self.viewer.copyDestinations),
+            (self.viewer.moveList, self.viewer.moveDestinations),
+        ):
+            with patch("yee3.app.QFileDialog.getExistingDirectory", return_value=str(folder)):
+                widget.itemDoubleClicked.emit(widget.item(0))
+            self.assertEqual(destinations["1"], str(folder))
+            self.assertTrue(Path(record.path_nf).exists())
+            self.assertFalse((folder / record.name).exists())
+
+    def test_unset_destination_shortcuts_configure_and_transfer(self):
+        folder = Path(self.temp.name) / "destination"
+        folder.mkdir()
+
+        for keys, move in (("Ctrl+1", False), ("Shift+1", True)):
+            record = self.make_image(f"{keys}.png", "PNG")
+            self.viewer.loadImageFromFile(record)
+            shortcut = next(
+                shortcut for shortcut in self.viewer.findChildren(QShortcut)
+                if shortcut.key() == QKeySequence(keys)
+            )
+            with patch("yee3.app.QFileDialog.getExistingDirectory", return_value=str(folder)):
+                shortcut.activated.emit()
+            self.assertTrue((folder / record.name).exists())
+            self.assertEqual(Path(record.path_nf).exists(), not move)
+            self.assertEqual(self.viewer.destinationFor(1, move=move), str(folder))
+
+    def test_clear_destination_removes_only_the_selected_assignment(self):
+        for widget, destinations, refresh in (
+            (self.viewer.copyList, self.viewer.copyDestinations, self.viewer.updateCopyList),
+            (self.viewer.moveList, self.viewer.moveDestinations, self.viewer.updateMoveList),
+        ):
+            destinations.update({"1": self.temp.name, 1: self.temp.name, "2": self.temp.name})
+            refresh()
+            point = widget.visualItemRect(widget.item(0)).center()
+            with patch("yee3.app.QMenu") as menu:
+                menu.return_value.exec.return_value = menu.return_value.addAction.return_value
+                widget.customContextMenuRequested.emit(point)
+            self.assertEqual(destinations, {"2": self.temp.name})
+            self.assertIn("(not set)", widget.item(0).text())
+            self.assertTrue(Path(self.temp.name).is_dir())
 
     def test_info_preserves_tga_navigation(self):
         first = self.make_image("first.png", "PNG", mtime=1)

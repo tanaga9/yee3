@@ -1134,6 +1134,10 @@ class ImageViewer(QMainWindow):
         self.copyDock.hide()
         self.addDockWidget(Qt.RightDockWidgetArea, self.copyDock)
         self.copyList.itemDoubleClicked.connect(self.onCopyListDoubleClicked)
+        self.copyList.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.copyList.customContextMenuRequested.connect(
+            lambda pos: self.showDestinationMenu(pos, move=False)
+        )
         self.updateCopyList()
         # Adjust image scaling after the dock's visibility changes.
         self.copyDock.visibilityChanged.connect(
@@ -1147,6 +1151,10 @@ class ImageViewer(QMainWindow):
         self.moveDock.hide()
         self.addDockWidget(Qt.RightDockWidgetArea, self.moveDock)
         self.moveList.itemDoubleClicked.connect(self.onMoveListDoubleClicked)
+        self.moveList.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.moveList.customContextMenuRequested.connect(
+            lambda pos: self.showDestinationMenu(pos, move=True)
+        )
         self.updateMoveList()
         self.moveDock.visibilityChanged.connect(
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
@@ -2213,6 +2221,36 @@ class ImageViewer(QMainWindow):
                 text = f"Shift+{i}: (not set)"
             self.moveList.addItem(text)
 
+    def destinationFor(self, index, *, move):
+        destinations = self.moveDestinations if move else self.copyDestinations
+        return destinations.get(str(index)) or destinations.get(index)
+
+    def selectDestination(self, index, *, move):
+        shortcut = f"Shift+{index}" if move else f"Cmd+{index}"
+        folder = QFileDialog.getExistingDirectory(self, f"Select destination for {shortcut}")
+        if folder:
+            destinations = self.moveDestinations if move else self.copyDestinations
+            destinations[str(index)] = folder
+            (self.updateMoveList if move else self.updateCopyList)()
+        return folder
+
+    def showDestinationMenu(self, pos, *, move):
+        widget = self.moveList if move else self.copyList
+        item = widget.itemAt(pos)
+        if item is None:
+            return
+        index = widget.row(item) + 1
+        if not self.destinationFor(index, move=move):
+            return
+
+        menu = QMenu()
+        clear = menu.addAction("Clear Destination")
+        if menu.exec(widget.viewport().mapToGlobal(pos)) == clear:
+            destinations = self.moveDestinations if move else self.copyDestinations
+            destinations.pop(str(index), None)
+            destinations.pop(index, None)
+            (self.updateMoveList if move else self.updateCopyList)()
+
     def transferToDestination(self, index, move=False):
         """
         Transfer the current image file to the destination folder associated with the given index.
@@ -2220,26 +2258,12 @@ class ImageViewer(QMainWindow):
 
         :param index: The index (1-9) corresponding to the Transfer destination.
         """
-        print(f"transferToDestination called with index: {index}")  # Debug output.
         label = "Move" if move else "Copy"
         label_result = "Moved" if move else "Copied"
-        shortcut_label = f"Shift+{index}" if move else f"Cmd+{index}"
-        destinations = self.moveDestinations if move else self.copyDestinations
         transfer_function = shutil.move if move else shutil.copy2
-        dest = destinations.get(str(index)) or destinations.get(index)
+        dest = self.destinationFor(index, move=move) or self.selectDestination(index, move=move)
         if not dest:
-            folder = QFileDialog.getExistingDirectory(
-                self, f"Select destination for {shortcut_label}"
-            )
-            if not folder:
-                print("No destination selected.")
-                return False
-            dest = folder
-            destinations[str(index)] = dest
-            if move:
-                self.updateMoveList()
-            else:
-                self.updateCopyList()
+            return False
 
         if self.currentPath:
             fileName = os.path.basename(self.currentPath)
@@ -2298,7 +2322,7 @@ class ImageViewer(QMainWindow):
 
     def copyToDestination(self, index):
         """
-        Copy the current image file to the move destination folder for the given index.
+        Copy the current image file to the copy destination folder for the given index.
         """
         return self.transferToDestination(index, move=False)
 
@@ -2322,18 +2346,18 @@ class ImageViewer(QMainWindow):
         return True
 
     def onCopyListDoubleClicked(self, item):
-        """
-        Handle double-click events on the copy destination list.
-        Double-clicking an item will trigger copying to that destination.
-        """
-        row = self.copyList.row(item)
-        index = row + 1
-        self.copyToDestination(index)
+        index = self.copyList.row(item) + 1
+        if self.destinationFor(index, move=False):
+            self.copyToDestination(index)
+        else:
+            self.selectDestination(index, move=False)
 
     def onMoveListDoubleClicked(self, item):
-        """Handle double-click on move list."""
         index = self.moveList.row(item) + 1
-        self.moveToDestination(index)
+        if self.destinationFor(index, move=True):
+            self.moveToDestination(index)
+        else:
+            self.selectDestination(index, move=True)
 
     def eventFilter(self, obj, event):
         """
