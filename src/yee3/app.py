@@ -291,42 +291,42 @@ class SortedList:
 
 class ImageFile:
     entry: os.DirEntry  # | None
-    path_nf: str
+    normalized_path: str
     stat_result: os.stat_result
     name: str
 
     def __init__(self, entry: os.DirEntry = None, path: str = ""):
         self.entry = entry
         if entry:
-            self.path_nf = unicodedata.normalize("NFD", entry.path)
+            self.normalized_path = unicodedata.normalize("NFD", entry.path)
         elif path:
             path = os.path.abspath(path)
-            self.path_nf = unicodedata.normalize("NFD", path)
+            self.normalized_path = unicodedata.normalize("NFD", path)
         else:
             raise ValueError("Either entry or path must be provided")
-        self.name = os.path.basename(self.path_nf)
+        self.name = os.path.basename(self.normalized_path)
 
     def stat(self):
         try:
             if self.entry:
                 self.stat_result = self.entry.stat()
             else:
-                self.stat_result = os.stat(self.path_nf)
+                self.stat_result = os.stat(self.normalized_path)
         except FileNotFoundError:
             self.stat_result = None
             return None
         return self.stat_result
 
     def __str__(self):
-        return self.path_nf
+        return self.normalized_path
 
 
 @dataclass
-class ImageData:
+class ImageRecord:
     name: str
-    path_nf: str
-    st_mtime: float
-    pseudo_random_hash: str
+    normalized_path: str
+    modified_time: float
+    random_sort_key: str
 
     @staticmethod
     def generate(pseudo_random_seed, imagefile: ImageFile):
@@ -334,12 +334,12 @@ class ImageData:
             image_identifier = f"{imagefile.stat_result.st_ino}"
         else:
             image_identifier = f"{imagefile.name}:{imagefile.stat_result.st_ctime:.32f}"
-        pseudo_random_hash = str(uuid.uuid5(pseudo_random_seed, image_identifier))
-        return ImageData(
+        random_sort_key = str(uuid.uuid5(pseudo_random_seed, image_identifier))
+        return ImageRecord(
             name=imagefile.name,
-            path_nf=imagefile.path_nf,
-            st_mtime=imagefile.stat_result.st_mtime,
-            pseudo_random_hash=pseudo_random_hash,
+            normalized_path=imagefile.normalized_path,
+            modified_time=imagefile.stat_result.st_mtime,
+            random_sort_key=random_sort_key,
         )
 
 
@@ -350,45 +350,48 @@ class DescendingFilename(str):
         return str.__gt__(self, other)
 
 
-class FastOrderedSet:
+class ImageOrderIndex:
     """
     An ordered set optimized for path-based lookup and next/previous navigation.
     """
 
-    def __init__(self, iterable=None, key_func=None):
+    def __init__(self, iterable=None, sort_key=None):
         """Initialize an ordered set, optionally inserting its initial items."""
-        self.items: List[ImageData] = []  # List for index-based access
-        self.keys = SortedList()  # Binary search optimized
-        self.index_map: Dict[str, ImageData] = {}  # Map paths to objects
-        self.next_map: Dict[str, str | None] = {}  # Path links for this set's items[] order
-        self.prev_map: Dict[str, str | None] = {}  # Path links for this set's items[] order
-        self.key_func = key_func
+        self.ordered_records: List[ImageRecord] = []  # List for index-based access
+        self.ordered_keys = SortedList()  # Binary search optimized
+        self.records_by_path: Dict[str, ImageRecord] = {}  # Map paths to image records
+        self.next_path_by_path: Dict[str, str | None] = {}
+        self.previous_path_by_path: Dict[str, str | None] = {}
+        self.sort_key = sort_key
         if iterable:
             self.update(iterable)
 
-    def add(self, item: ImageData):
+    def add(self, item: ImageRecord):
         """Insert a new path in O(N) worst-case time."""
-        if item.path_nf in self.index_map:
+        if item.normalized_path in self.records_by_path:
             return  # Duplicate, skip insertion
 
-        if self.key_func is None:
+        if self.sort_key is None:
             # Insert at a random position if no sorting key is provided.
-            index = random.randint(0, len(self.items))
+            index = random.randint(0, len(self.ordered_records))
         else:
-            key = (self.key_func(item), item.path_nf)
-            index = self.keys.bisect_left(key)  # Get insertion index (O(log N))
-            self.keys.add(key)
+            key = (self.sort_key(item), item.normalized_path)
+            index = self.ordered_keys.bisect_left(key)  # Get insertion index (O(log N))
+            self.ordered_keys.add(key)
 
-        prev_path = self.items[index - 1].path_nf if index > 0 else None
-        next_path = self.items[index].path_nf if index < len(self.items) else None
-        self.items.insert(index, item)  # Insert at the correct position (O(N))
-        self.index_map[item.path_nf] = item  # Store reference for quick lookup
-        self.prev_map[item.path_nf] = prev_path
-        self.next_map[item.path_nf] = next_path
+        prev_path = self.ordered_records[index - 1].normalized_path if index > 0 else None
+        next_path = (
+            self.ordered_records[index].normalized_path
+            if index < len(self.ordered_records) else None
+        )
+        self.ordered_records.insert(index, item)  # Insert at the correct position (O(N))
+        self.records_by_path[item.normalized_path] = item  # Store reference for quick lookup
+        self.previous_path_by_path[item.normalized_path] = prev_path
+        self.next_path_by_path[item.normalized_path] = next_path
         if prev_path is not None:
-            self.next_map[prev_path] = item.path_nf
+            self.next_path_by_path[prev_path] = item.normalized_path
         if next_path is not None:
-            self.prev_map[next_path] = item.path_nf
+            self.previous_path_by_path[next_path] = item.normalized_path
 
     def update(self, sequence):
         """
@@ -404,20 +407,20 @@ class FastOrderedSet:
         """Apply a scan batch to a keyed order, preserving unchanged positions."""
         reordered = {}
         for record in records:
-            path = record.path_nf
-            existing = self.index_map.get(path)
-            if existing is None or self.key_func(existing) != self.key_func(record):
+            path = record.normalized_path
+            existing = self.records_by_path.get(path)
+            if existing is None or self.sort_key(existing) != self.sort_key(record):
                 reordered[path] = record
             else:
-                key = (self.key_func(record), path)
-                self.items[self.keys.bisect_left(key)] = record
-                self.index_map[path] = record
+                key = (self.sort_key(record), path)
+                self.ordered_records[self.ordered_keys.bisect_left(key)] = record
+                self.records_by_path[path] = record
 
         # Rebuild only when changes are numerous relative to the index, so
         # successive fixed-size batches cannot keep rebuilding a growing order.
-        if len(reordered) < max(64, (len(self.items) + 7) // 8):
+        if len(reordered) < max(64, (len(self.ordered_records) + 7) // 8):
             for path, record in reordered.items():
-                existing = self.index_map.get(path)
+                existing = self.records_by_path.get(path)
                 if existing is not None:
                     self.remove(existing)
                 self.add(record)
@@ -425,125 +428,127 @@ class FastOrderedSet:
 
         entries = [
             (key, record)
-            for key, record in zip(self.keys, self.items)
-            if record.path_nf not in reordered
+            for key, record in zip(self.ordered_keys, self.ordered_records)
+            if record.normalized_path not in reordered
         ]
         entries.extend(
-            ((self.key_func(record), path), record)
+            ((self.sort_key(record), path), record)
             for path, record in reordered.items()
         )
         entries.sort(key=lambda entry: entry[0])
         self.clear()
-        self.keys = SortedList(key for key, _ in entries)
+        self.ordered_keys = SortedList(key for key, _ in entries)
         previous = None
         for _, record in entries:
-            path = record.path_nf
-            self.items.append(record)
-            self.index_map[path] = record
-            self.prev_map[path] = previous
-            self.next_map[path] = None
+            path = record.normalized_path
+            self.ordered_records.append(record)
+            self.records_by_path[path] = record
+            self.previous_path_by_path[path] = previous
+            self.next_path_by_path[path] = None
             if previous is not None:
-                self.next_map[previous] = path
+                self.next_path_by_path[previous] = path
             previous = path
 
-    def remove(self, item: ImageData):
+    def remove(self, item: ImageRecord):
         """Remove the stored record for this path, if present."""
-        item = self.index_map.get(item.path_nf)
+        item = self.records_by_path.get(item.normalized_path)
         if item is None:
             return
 
-        prev_path = self.prev_map.get(item.path_nf)
-        next_path = self.next_map.get(item.path_nf)
+        prev_path = self.previous_path_by_path.get(item.normalized_path)
+        next_path = self.next_path_by_path.get(item.normalized_path)
 
-        # Remove from index_map
-        del self.index_map[item.path_nf]
-        self.prev_map.pop(item.path_nf, None)
-        self.next_map.pop(item.path_nf, None)
+        # Remove from records_by_path
+        del self.records_by_path[item.normalized_path]
+        self.previous_path_by_path.pop(item.normalized_path, None)
+        self.next_path_by_path.pop(item.normalized_path, None)
 
         if prev_path is not None:
-            self.next_map[prev_path] = next_path
+            self.next_path_by_path[prev_path] = next_path
         if next_path is not None:
-            self.prev_map[next_path] = prev_path
+            self.previous_path_by_path[next_path] = prev_path
 
         # Remove from the items list
-        self.items.remove(item)
+        self.ordered_records.remove(item)
 
         # If a key function is set, remove the key from SortedList as well
-        if self.key_func is not None:
-            key = (self.key_func(item), item.path_nf)
-            self.keys.remove(key)
+        if self.sort_key is not None:
+            key = (self.sort_key(item), item.normalized_path)
+            self.ordered_keys.remove(key)
 
     def discard_paths(self, paths):
         """Remove paths in one pass while preserving the order of survivors."""
-        self.items = [item for item in self.items if item.path_nf not in paths]
-        self.keys.retain(lambda key: key[1] not in paths)
+        self.ordered_records = [
+            record for record in self.ordered_records if record.normalized_path not in paths
+        ]
+        self.ordered_keys.retain(lambda key: key[1] not in paths)
         previous = None
-        for item in self.items:
-            path = item.path_nf
-            self.prev_map[path] = previous
+        for item in self.ordered_records:
+            path = item.normalized_path
+            self.previous_path_by_path[path] = previous
             if previous is not None:
-                self.next_map[previous] = path
+                self.next_path_by_path[previous] = path
             previous = path
         if previous is not None:
-            self.next_map[previous] = None
+            self.next_path_by_path[previous] = None
         for path in paths:
-            self.index_map.pop(path, None)
-            self.prev_map.pop(path, None)
-            self.next_map.pop(path, None)
+            self.records_by_path.pop(path, None)
+            self.previous_path_by_path.pop(path, None)
+            self.next_path_by_path.pop(path, None)
 
     def clear(self):
         """Remove all elements from the set."""
-        self.items.clear()
-        self.keys.clear()
-        self.index_map.clear()
-        self.next_map.clear()
-        self.prev_map.clear()
+        self.ordered_records.clear()
+        self.ordered_keys.clear()
+        self.records_by_path.clear()
+        self.next_path_by_path.clear()
+        self.previous_path_by_path.clear()
 
-    def get(self, value: str):
-        """Return the ImageData for the given path in this set."""
-        return self.index_map.get(value)
+    def get(self, path: str):
+        """Return the image record for the given path."""
+        return self.records_by_path.get(path)
 
     def first_path(self):
-        """Return the first path in this set's items[] order."""
-        if not self.items:
+        """Return the first path in this index."""
+        if not self.ordered_records:
             return None
-        return self.items[0].path_nf
+        return self.ordered_records[0].normalized_path
 
     def last_path(self):
-        """Return the last path in this set's items[] order."""
-        if not self.items:
+        """Return the last path in this index."""
+        if not self.ordered_records:
             return None
-        return self.items[-1].path_nf
+        return self.ordered_records[-1].normalized_path
 
-    def next_path(self, value: str, loop=False):
-        """Return the next path in this set's items[] order."""
-        if value not in self.index_map:
-            raise ValueError(f"'{value}' not found in FastOrderedSet")
-        next_path = self.next_map.get(value)
+    def next_path(self, path: str, loop=False):
+        """Return the next path in this index."""
+        if path not in self.records_by_path:
+            raise ValueError(f"'{path}' not found in ImageOrderIndex")
+        next_path = self.next_path_by_path.get(path)
         if next_path is None and loop:
             return self.first_path()
         return next_path
 
-    def prev_path(self, value: str, loop=False):
-        """Return the previous path in this set's items[] order."""
-        if value not in self.index_map:
-            raise ValueError(f"'{value}' not found in FastOrderedSet")
-        prev_path = self.prev_map.get(value)
+    def prev_path(self, path: str, loop=False):
+        """Return the previous path in this index."""
+        if path not in self.records_by_path:
+            raise ValueError(f"'{path}' not found in ImageOrderIndex")
+        prev_path = self.previous_path_by_path.get(path)
         if prev_path is None and loop:
             return self.last_path()
         return prev_path
 
     def __len__(self):
         """Return the number of elements. O(1)."""
-        return len(self.items)
+        return len(self.ordered_records)
 
     def __iter__(self):
         """Iterate through elements in order. O(N)."""
-        return iter(self.items)
+        return iter(self.ordered_records)
 
     def __repr__(self):
         """Return a string representation of the set. O(N)."""
-        return f"FastOrderedSet({self.items})"
+        return f"ImageOrderIndex({self.ordered_records})"
 
 
 class VerticalGauge(QWidget):
@@ -637,7 +642,7 @@ class ImageDisplayWidget(QWidget):
         super().__init__(parent)
         self.pixmap = None
         self.movie = None
-        self.scaleFactor = 1.0  # Scale factor, adjusted as needed
+        self.scale_factor = 1.0  # Scale factor, adjusted as needed
 
     def setData(self, pixmap: QPixmap, movie: QMovie = None):
         """Set the image data"""
@@ -669,24 +674,24 @@ class ImageDisplayWidget(QWidget):
 
     def setScaleFactor(self, factor: float):
         """Set the scale factor"""
-        self.scaleFactor = factor
+        self.scale_factor = factor
         self.update()
 
     def paintEvent(self, event):
         """Render the image on the widget"""
         painter = QPainter(self)
-        scaleFactor = 1
+        scale_factor = 1
         if self.movie:
             # Draw the movie frame
             self.pixmap = self.movie.currentPixmap()
-            scaleFactor = self.scaleFactor
+            scale_factor = self.scale_factor
         if self.pixmap:
-            if scaleFactor == 1:
+            if scale_factor == 1:
                 scaled_pixmap = self.pixmap
             else:
                 # Scale the image as needed
-                new_width = int(self.pixmap.width() * scaleFactor)
-                new_height = int(self.pixmap.height() * scaleFactor)
+                new_width = int(self.pixmap.width() * scale_factor)
+                new_height = int(self.pixmap.height() * scale_factor)
                 scaled_pixmap = self.pixmap.scaled(
                     new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
@@ -978,15 +983,19 @@ class ReplaceDialog(QDialog):
         self.cancelButton.clicked.connect(lambda: self.done(ReplaceDialogResult.CANCEL))
 
 
-class ImageLoaderWorker(QThread):
-    imageLoaded = Signal(str, bool)
-    finishedLoading = Signal(bool, object)
+class FolderScanWorker(QThread):
+    records_discovered = Signal(str, bool)
+    scan_completed = Signal(bool, object)
 
-    def __init__(self, folder, pseudo_random_seed, filePath=None, parent=None):
+    def __init__(self, folder, pseudo_random_seed, requested_image_path=None, parent=None):
         super().__init__(parent)
         self.folder = unicodedata.normalize("NFD", folder)
         self.pseudo_random_seed = pseudo_random_seed
-        self.filePath = os.path.abspath(filePath) if filePath is not None else None
+        self.requested_image_path = (
+            os.path.abspath(requested_image_path)
+            if requested_image_path is not None
+            else None
+        )
         self.batch_count_threshold = 10
 
     def run(self):
@@ -1007,53 +1016,52 @@ class ImageLoaderWorker(QThread):
                 return math.ceil(y)
 
             self.batch_count_threshold = 10
-            data = []
+            record_batch = []
             last_emit_timestamp = datetime.now()
             timer = IterationTimer()
-            if self.filePath is not None:
-                imagefile = ImageFile(path=self.filePath)
-                if has_image_extension(imagefile.name, extensions):
-                    if imagefile.stat():
-                        imageData = ImageData.generate(self.pseudo_random_seed, imagefile)
-                        self.imageLoaded.emit(json.dumps([asdict(imageData)]), False)
+            if self.requested_image_path is not None:
+                image_file = ImageFile(path=self.requested_image_path)
+                if has_image_extension(image_file.name, extensions):
+                    if image_file.stat():
+                        image_record = ImageRecord.generate(self.pseudo_random_seed, image_file)
+                        self.records_discovered.emit(json.dumps([asdict(image_record)]), False)
             if self.isInterruptionRequested():
                 return
             timer.start()
             for entry in os.scandir(self.folder):
                 if self.isInterruptionRequested():
                     return
-                imagefile = ImageFile(entry=entry)
-                if has_image_extension(imagefile.name, extensions):
-                    candidate_names.add(imagefile.name)
-                    if imagefile.stat():
-                        imageData = ImageData.generate(
-                            self.pseudo_random_seed, imagefile
+                image_file = ImageFile(entry=entry)
+                if has_image_extension(image_file.name, extensions):
+                    candidate_names.add(image_file.name)
+                    if image_file.stat():
+                        image_record = ImageRecord.generate(
+                            self.pseudo_random_seed, image_file
                         )
-                        data.append(asdict(imageData))
+                        record_batch.append(asdict(image_record))
                 now = datetime.now()
                 timer.stop()
                 if (avg := timer.average_time()) is not None:
                     self.batch_count_threshold = compute_batch_count(avg * 1000)
                 if (
-                    len(data) >= self.batch_count_threshold
+                    len(record_batch) >= self.batch_count_threshold
                     or (now - last_emit_timestamp).total_seconds() > 0.25
                 ):
-                    if len(data) > 0:
-                        # handleNewImage
-                        self.imageLoaded.emit(json.dumps(data), True)
-                        data = []
+                    if len(record_batch) > 0:
+                        self.records_discovered.emit(json.dumps(record_batch), True)
+                        record_batch = []
                     self.msleep(10)
                     last_emit_timestamp = now
                 timer.start()
             if self.isInterruptionRequested():
                 return
-            if data:
-                self.imageLoaded.emit(json.dumps(data), True)
+            if record_batch:
+                self.records_discovered.emit(json.dumps(record_batch), True)
             scan_succeeded = True
         except Exception as e:
             print("Error during folder scanning:", e)
         finally:
-            self.finishedLoading.emit(scan_succeeded, candidate_names)
+            self.scan_completed.emit(scan_succeeded, candidate_names)
 
 
 class ImageViewer(QMainWindow):
@@ -1096,8 +1104,8 @@ class ImageViewer(QMainWindow):
             pass
 
         # Load window settings (size, position, and copy destinations) from configuration file.
-        self.copyDestinations = {}  # Mapping for keys 1..9 to copy destination folders.
-        self.moveDestinations = {}  # Mapping for keys 1..9 to move destination folders.
+        self.copy_destinations = {}  # Mapping for keys 1..9 to copy destination folders.
+        self.move_destinations = {}  # Mapping for keys 1..9 to move destination folders.
         self.loadSettings()
         if self.size().isEmpty():
             self.resize(800, 600)
@@ -1110,90 +1118,93 @@ class ImageViewer(QMainWindow):
         )
 
         # Create a label to display images.
-        self.imageDisplay = ImageDisplayWidget()
-        self.imageDisplay.setBackgroundRole(QPalette.Base)
-        self.imageDisplay.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.image_display = ImageDisplayWidget()
+        self.image_display.setBackgroundRole(QPalette.Base)
+        self.image_display.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
         # Set up a scroll area with a black background.
-        self.scrollArea = QScrollArea()
-        self.scrollArea.setAlignment(Qt.AlignCenter)
-        self.scrollArea.setStyleSheet("background-color: #222;")
-        self.scrollArea.setWidget(self.imageDisplay)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setAlignment(Qt.AlignCenter)
+        self.scroll_area.setStyleSheet("background-color: #222;")
+        self.scroll_area.setWidget(self.image_display)
         # Prevent the scroll area from taking focus so that key events are handled by the main window.
-        self.scrollArea.setFocusPolicy(Qt.NoFocus)
-        self.setCentralWidget(self.scrollArea)
+        self.scroll_area.setFocusPolicy(Qt.NoFocus)
+        self.setCentralWidget(self.scroll_area)
 
         # Install an event filter to capture double-click events.
-        self.imageDisplay.installEventFilter(self)
-        self.scrollArea.viewport().installEventFilter(self)
+        self.image_display.installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
 
         # Create and always show the status bar.
         self.setStatusBar(QStatusBar(self))
         self.statusBar().show()
 
         # Create a dock widget for copy destinations.
-        self.copyDock = QDockWidget("Copy Destinations", self)
-        self.copyList = QListWidget()
-        self.copyDock.setWidget(self.copyList)
+        self.copy_dock = QDockWidget("Copy Destinations", self)
+        self.copy_list = QListWidget()
+        self.copy_dock.setWidget(self.copy_list)
         # Initially hide the dock widget.
-        self.copyDock.hide()
-        self.addDockWidget(Qt.RightDockWidgetArea, self.copyDock)
-        self.copyList.itemDoubleClicked.connect(self.onCopyListDoubleClicked)
-        self.copyList.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.copyList.customContextMenuRequested.connect(
+        self.copy_dock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.copy_dock)
+        self.copy_list.itemDoubleClicked.connect(self.onCopyListDoubleClicked)
+        self.copy_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.copy_list.customContextMenuRequested.connect(
             lambda pos: self.showDestinationMenu(pos, move=False)
         )
         self.updateCopyList()
         # Adjust image scaling after the dock's visibility changes.
-        self.copyDock.visibilityChanged.connect(
+        self.copy_dock.visibilityChanged.connect(
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
         )
 
         # Create a dock widget for move destinations.
-        self.moveDock = QDockWidget("Move Destinations", self)
-        self.moveList = QListWidget()
-        self.moveDock.setWidget(self.moveList)
-        self.moveDock.hide()
-        self.addDockWidget(Qt.RightDockWidgetArea, self.moveDock)
-        self.moveList.itemDoubleClicked.connect(self.onMoveListDoubleClicked)
-        self.moveList.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.moveList.customContextMenuRequested.connect(
+        self.move_dock = QDockWidget("Move Destinations", self)
+        self.move_list = QListWidget()
+        self.move_dock.setWidget(self.move_list)
+        self.move_dock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.move_dock)
+        self.move_list.itemDoubleClicked.connect(self.onMoveListDoubleClicked)
+        self.move_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.move_list.customContextMenuRequested.connect(
             lambda pos: self.showDestinationMenu(pos, move=True)
         )
         self.updateMoveList()
-        self.moveDock.visibilityChanged.connect(
+        self.move_dock.visibilityChanged.connect(
             lambda visible: QTimer.singleShot(0, self.adjustImageScale)
         )
 
-        self.metadataDock = QDockWidget("Info", self)
-        self.metadataPanel = MetadataPanel()
-        self.metadataDock.setWidget(self.metadataPanel)
-        self.metadataDock.setMinimumWidth(260)
-        self.metadataDock.hide()
-        self.addDockWidget(Qt.RightDockWidgetArea, self.metadataDock)
-        self.metadataDock.visibilityChanged.connect(self.onMetadataDockVisibilityChanged)
+        self.metadata_dock = QDockWidget("Info", self)
+        self.metadata_panel = MetadataPanel()
+        self.metadata_dock.setWidget(self.metadata_panel)
+        self.metadata_dock.setMinimumWidth(260)
+        self.metadata_dock.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.metadata_dock)
+        self.metadata_dock.visibilityChanged.connect(self.onMetadataDockVisibilityChanged)
 
         # Create the menu bar and add the "File" menu with several actions.
         self.createMenus()
 
-        # mtime order: images sorted by last modified time (newest first).
-        self.mtimeOrderSet = FastOrderedSet(key_func=lambda p: -1 * p.st_mtime)
-        # random order: images in random order (can be changed later to filename order).
-        self.randomOrderSet = FastOrderedSet(key_func=lambda p: p.pseudo_random_hash)
-        # fname order: file name order
-        self.fnameOrderSet = FastOrderedSet(key_func=lambda p: DescendingFilename(p.name))
+        self.modified_time_order: ImageOrderIndex = ImageOrderIndex(
+            sort_key=lambda record: -record.modified_time
+        )
+        self.random_order: ImageOrderIndex = ImageOrderIndex(
+            sort_key=lambda record: record.random_sort_key
+        )
+        self.filename_order: ImageOrderIndex = ImageOrderIndex(
+            sort_key=lambda record: DescendingFilename(record.name)
+        )
 
         self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
 
-        self.verticalOrderSet = self.mtimeOrderSet
-        self.horizontalOrderSet = self.randomOrderSet
+        self.vertical_order: ImageOrderIndex = self.modified_time_order
+        self.horizontal_order: ImageOrderIndex = self.random_order
 
         # Store the current image render source and the current file path.
-        self.currentPixmap = None
-        self.currentPath = None
+        self.current_pixmap = None
+        self.current_path = None
 
         # The current scale factor.
-        self.scaleFactor = 1.0
+        self.scale_factor = 1.0
 
         # Enable drag & drop.
         self.setAcceptDrops(True)
@@ -1242,12 +1253,12 @@ class ImageViewer(QMainWindow):
         self.decayTimer.timeout.connect(self.decayScrollValues)
         self.decayTimer.start(50)  # Called every 50ms
 
-        self.lazyLoadingInProgress = False
-        self.imageLoader = None
+        self.folder_scan_in_progress = False
+        self.folder_scan_worker = None
         self._closing = False
         QApplication.instance().aboutToQuit.connect(self.stopFolderScan)
-        self.watcher = QFileSystemWatcher()
-        self.watcher.directoryChanged.connect(self.on_directory_changed)
+        self.directory_watcher = QFileSystemWatcher()
+        self.directory_watcher.directoryChanged.connect(self.on_directory_changed)
         # Polling fallback for network shares (e.g., Samba) to detect renames
         self._watched_folder = None
         self._last_dir_snapshot = None
@@ -1261,30 +1272,30 @@ class ImageViewer(QMainWindow):
         # Require an explicit reload when changes overlap a scan.
         self._folder_changed_during_scan = False
         self._reload_was_required = False
-        self.selected_file_path = None
+        self.requested_image_path = None
         self._scan_seen_paths = set()
         self._scan_refresh_path = None
-        self._image_candidates = deque()
-        self._candidate_paths = set()
-        self._candidate_retry_pending = False
+        self._image_candidate_queue = deque()
+        self._queued_or_attempted_paths = set()
+        self._candidate_attempt_scheduled = False
 
         self.counter = RecentCounter()
 
-    def remove(self, imageData: ImageData):
-        if len(self.mtimeOrderSet) == 0:
+    def remove(self, image_record: ImageRecord):
+        if len(self.modified_time_order) == 0:
             return
 
-        self.mtimeOrderSet.remove(imageData)
-        self.randomOrderSet.remove(imageData)
-        self.fnameOrderSet.remove(imageData)
+        self.modified_time_order.remove(image_record)
+        self.random_order.remove(image_record)
+        self.filename_order.remove(image_record)
 
-        self.label.setText(f"count: {len(self.mtimeOrderSet)}")
+        self.image_count_label.setText(f"count: {len(self.modified_time_order)}")
 
-        if len(self.mtimeOrderSet) == 0 or self.currentPath == imageData.path_nf:
-            self.currentPixmap = None
-            self.currentPath = None
-            if self.metadataDock.isVisible():
-                self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+        if len(self.modified_time_order) == 0 or self.current_path == image_record.normalized_path:
+            self.current_pixmap = None
+            self.current_path = None
+            if self.metadata_dock.isVisible():
+                self.metadata_panel.setPlaceholder("Image metadata will appear here.")
 
     def createMenus(self):
         """
@@ -1341,9 +1352,9 @@ class ImageViewer(QMainWindow):
         """
         Reveal the currently displayed file in Finder (macOS).
         """
-        if self.currentPath:
+        if self.current_path:
             try:
-                subprocess.call(["open", "-R", self.currentPath])
+                subprocess.call(["open", "-R", self.current_path])
             except Exception as e:
                 print("Error revealing file in Finder:", e)
 
@@ -1351,56 +1362,56 @@ class ImageViewer(QMainWindow):
         """
         Show the copy destination dock widget.
         """
-        self.copyDock.show()
+        self.copy_dock.show()
 
     def showMoveDock(self):
         """Show the move destination dock widget."""
-        self.moveDock.show()
+        self.move_dock.show()
 
     def showMetadataDock(self):
         """Show the metadata dock widget."""
-        if self.metadataDock.isVisible():
+        if self.metadata_dock.isVisible():
             self.refreshMetadataForCurrentImage()
         else:
             # visibilityChanged refreshes metadata when the dock opens.
-            self.metadataDock.show()
+            self.metadata_dock.show()
 
     def onMetadataDockVisibilityChanged(self, visible):
         QTimer.singleShot(0, self.adjustImageScale)
         if visible:
             self.refreshMetadataForCurrentImage()
         else:
-            self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+            self.metadata_panel.setPlaceholder("Image metadata will appear here.")
 
     def refreshMetadataForCurrentImage(self):
-        if not self.metadataDock.isVisible():
+        if not self.metadata_dock.isVisible():
             return
-        if not self.currentPath:
-            self.metadataPanel.setPlaceholder("Image metadata will appear here.")
+        if not self.current_path:
+            self.metadata_panel.setPlaceholder("Image metadata will appear here.")
             return
-        current_image = self.verticalOrderSet.get(self.currentPath)
+        current_image = self.vertical_order.get(self.current_path)
         if current_image is not None:
             self.loadImageFromFile(current_image)
 
     def get_order_name(self, order):
         """Return the order type as a string based on the list object"""
-        if order is self.mtimeOrderSet:
+        if order is self.modified_time_order:
             return "mtime"
-        elif order is self.fnameOrderSet:
+        elif order is self.filename_order:
             return "fname"
-        elif order is self.randomOrderSet:
+        elif order is self.random_order:
             return "random"
         return "mtime"  # Default in case of an unexpected value
 
     def get_order_by_name(self, name, default=None):
         """Return the corresponding order list based on the given string"""
         if name == "mtime":
-            return self.mtimeOrderSet
+            return self.modified_time_order
         elif name == "fname":
-            return self.fnameOrderSet
+            return self.filename_order
         elif name == "random":
-            return self.randomOrderSet
-        return default if default is not None else self.mtimeOrderSet
+            return self.random_order
+        return default if default is not None else self.modified_time_order
 
     def toggled_order(self, current, other):
         """
@@ -1419,24 +1430,24 @@ class ImageViewer(QMainWindow):
         return "mtime"
 
     def onVScrollClicked(self):
-        if self.verticalOrderSet:
+        if self.vertical_order:
             # Get the current vertical and horizontal order as strings
-            current = self.get_order_name(self.verticalOrderSet)
-            other = self.get_order_name(self.horizontalOrderSet)
+            current = self.get_order_name(self.vertical_order)
+            other = self.get_order_name(self.horizontal_order)
             # Determine the next order to set
             new_order_name = self.toggled_order(current, other)
-            self.verticalOrderSet = self.get_order_by_name(new_order_name)
-            self.VScroll.setText("VScroll: " + new_order_name)
+            self.vertical_order = self.get_order_by_name(new_order_name)
+            self.vertical_order_button.setText("VScroll: " + new_order_name)
 
     def onHScrollClicked(self):
-        if self.horizontalOrderSet:
+        if self.horizontal_order:
             # Get the current horizontal and vertical order as strings
-            current = self.get_order_name(self.horizontalOrderSet)
-            other = self.get_order_name(self.verticalOrderSet)
+            current = self.get_order_name(self.horizontal_order)
+            other = self.get_order_name(self.vertical_order)
             # Determine the next order to set
             new_order_name = self.toggled_order(current, other)
-            self.horizontalOrderSet = self.get_order_by_name(new_order_name)
-            self.HScroll.setText("HScroll: " + new_order_name)
+            self.horizontal_order = self.get_order_by_name(new_order_name)
+            self.horizontal_order_button.setText("HScroll: " + new_order_name)
 
     def createActions(self):
         """
@@ -1467,23 +1478,23 @@ class ImageViewer(QMainWindow):
         self.normalSizeAct = QAction("Normal Size", self)
         self.normalSizeAct.triggered.connect(self.normalSize)
 
-        self.VScroll = QToolButton()
-        self.VScroll.setText("VScroll: mtime")
-        self.VScroll.clicked.connect(self.onVScrollClicked)
+        self.vertical_order_button = QToolButton()
+        self.vertical_order_button.setText("VScroll: mtime")
+        self.vertical_order_button.clicked.connect(self.onVScrollClicked)
 
-        self.HScroll = QToolButton()
-        self.HScroll.setText("HScroll: random")
-        self.HScroll.clicked.connect(self.onHScrollClicked)
+        self.horizontal_order_button = QToolButton()
+        self.horizontal_order_button.setText("HScroll: random")
+        self.horizontal_order_button.clicked.connect(self.onHScrollClicked)
 
-        self.loopScroll = QToolButton()
-        self.loopScroll.setText("Loop")
-        self.loopScroll.setCheckable(True)
-        self.loopScroll.setChecked(False)
+        self.loop_scroll_button = QToolButton()
+        self.loop_scroll_button.setText("Loop")
+        self.loop_scroll_button.setCheckable(True)
+        self.loop_scroll_button.setChecked(False)
 
-        self.freeScroll = QToolButton()
-        self.freeScroll.setText("Free Scroll")
-        self.freeScroll.setCheckable(True)
-        self.freeScroll.setChecked(False)
+        self.free_scroll_button = QToolButton()
+        self.free_scroll_button.setText("Free Scroll")
+        self.free_scroll_button.setCheckable(True)
+        self.free_scroll_button.setChecked(False)
 
         font = QFont("Courier New")
         font.setStyleHint(QFont.Monospace)
@@ -1494,19 +1505,19 @@ class ImageViewer(QMainWindow):
         self.watchStatusLabel.setFont(font)
 
         # --- Add Poll toggle toolbutton ---
-        self.pollToggle = QToolButton()
-        self.pollToggle.setText("Poll")
-        self.pollToggle.setCheckable(True)
-        self.pollToggle.setChecked(False)
-        self.pollToggle.toggled.connect(self.handlePollToggled)
+        self.poll_button = QToolButton()
+        self.poll_button.setText("Poll")
+        self.poll_button.setCheckable(True)
+        self.poll_button.setChecked(False)
+        self.poll_button.toggled.connect(self.handlePollToggled)
 
-        self.count_label = QLabel("")
-        self.count_label.setFixedWidth(68)
-        self.count_label.setFont(font)
+        self.display_rate_label = QLabel("")
+        self.display_rate_label.setFixedWidth(68)
+        self.display_rate_label.setFont(font)
 
-        self.label = QLabel("count: ")
-        self.label.setFixedWidth(200)
-        self.label.setFont(font)
+        self.image_count_label = QLabel("count: ")
+        self.image_count_label.setFixedWidth(200)
+        self.image_count_label.setFont(font)
 
     def createToolbar(self):
         """
@@ -1521,27 +1532,27 @@ class ImageViewer(QMainWindow):
         # toolbar.addAction(self.zoomInAct)
         # toolbar.addAction(self.zoomOutAct)
         toolbar.addAction(self.normalSizeAct)
-        toolbar.addWidget(self.VScroll)
-        toolbar.addWidget(self.HScroll)
-        toolbar.addWidget(self.loopScroll)
-        toolbar.addWidget(self.freeScroll)
+        toolbar.addWidget(self.vertical_order_button)
+        toolbar.addWidget(self.horizontal_order_button)
+        toolbar.addWidget(self.loop_scroll_button)
+        toolbar.addWidget(self.free_scroll_button)
         toolbar.addWidget(self.watchStatusLabel)
-        toolbar.addWidget(self.pollToggle)
+        toolbar.addWidget(self.poll_button)
 
-        count_label_action = QWidgetAction(toolbar)
-        count_label_action.setDefaultWidget(self.count_label)
-        toolbar.addAction(count_label_action)
+        display_rate_action = QWidgetAction(toolbar)
+        display_rate_action.setDefaultWidget(self.display_rate_label)
+        toolbar.addAction(display_rate_action)
 
-        label_action = QWidgetAction(toolbar)
-        label_action.setDefaultWidget(self.label)
-        toolbar.addAction(label_action)
+        image_count_action = QWidgetAction(toolbar)
+        image_count_action.setDefaultWidget(self.image_count_label)
+        toolbar.addAction(image_count_action)
 
     def updateWatchStatusLabel(self):
         """Update the watchStatusLabel to reflect Watch/Polling status."""
-        if self._folder_changed_during_scan and not self.lazyLoadingInProgress:
+        if self._folder_changed_during_scan and not self.folder_scan_in_progress:
             self.watchStatusLabel.setText("Reload Current Folder")
             return
-        watch_on = any(self.watcher.directories())
+        watch_on = any(self.directory_watcher.directories())
         poll_on = self._directory_poll_timer.isActive()
         if watch_on and poll_on:
             status = "wp"
@@ -1555,7 +1566,7 @@ class ImageViewer(QMainWindow):
 
     def handlePollToggled(self, checked):
         """Start or stop the directory polling timer based on the toggle state."""
-        if checked and not self.lazyLoadingInProgress and not self._folder_changed_during_scan:
+        if checked and not self.folder_scan_in_progress and not self._folder_changed_during_scan:
             if not self._directory_poll_timer.isActive():
                 self._directory_poll_timer.start(2000)
         else:
@@ -1583,7 +1594,7 @@ class ImageViewer(QMainWindow):
 
         :param path: The path to the folder or file to load images from.
         """
-        if self._closing or self.lazyLoadingInProgress:
+        if self._closing or self.folder_scan_in_progress:
             return
 
         self._scan_start_time = time.monotonic()
@@ -1616,126 +1627,127 @@ class ImageViewer(QMainWindow):
                 folderPath = self._watched_folder
                 if filePath is not None:
                     filePath = os.path.join(folderPath, os.path.basename(filePath))
-        self._scan_refresh_path = self.currentPath if same_folder and not filePath else None
+        self._scan_refresh_path = self.current_path if same_folder and not filePath else None
         self._watched_folder = folderPath
         self._scan_seen_paths.clear()
         self.resetImageCandidates()
-        self.selected_file_path = (
+        self.requested_image_path = (
             unicodedata.normalize("NFD", filePath) if filePath else None
         )
         if not same_folder:
             self._last_dir_snapshot = None
         self._first_poll_after_scan = False
 
-        self.lazyLoadingInProgress = True
+        self.folder_scan_in_progress = True
         self._reload_was_required = same_folder and self._folder_changed_during_scan
         self._folder_changed_during_scan = False
         if not same_folder:
-            watched_paths = self.watcher.directories()
+            watched_paths = self.directory_watcher.directories()
             if watched_paths:
-                self.watcher.removePaths(watched_paths)
+                self.directory_watcher.removePaths(watched_paths)
         self._directory_poll_timer.stop()
         self.updateWatchStatusLabel()
 
         if not same_folder:
-            self.fnameOrderSet.clear()
-            self.mtimeOrderSet.clear()
-            self.randomOrderSet.clear()
-            self.currentPath = None
-            self.currentPixmap = None
-            self.imageDisplay.clearData()
+            self.filename_order.clear()
+            self.modified_time_order.clear()
+            self.random_order.clear()
+            self.current_path = None
+            self.current_pixmap = None
+            self.image_display.clearData()
             self.refreshMetadataForCurrentImage()
 
         self.statusBar().showMessage("loading...", 2000)
 
         if refresh_random_seed:
             self.pseudo_random_seed = uuid.UUID(int=random.getrandbits(128))
-        self.imageLoader = ImageLoaderWorker(
+        self.folder_scan_worker = FolderScanWorker(
             folderPath, self.pseudo_random_seed, filePath
         )
-        self.imageLoader.imageLoaded.connect(self.handleNewImage)
-        self.imageLoader.finishedLoading.connect(self.finishLoadingImages)
-        self.imageLoader.finished.connect(self.closeAfterFolderScan)
-        self.imageLoader.start()
+        self.folder_scan_worker.records_discovered.connect(self._on_scan_records_discovered)
+        self.folder_scan_worker.scan_completed.connect(self._on_folder_scan_completed)
+        self.folder_scan_worker.finished.connect(self.closeAfterFolderScan)
+        self.folder_scan_worker.start()
 
-    def handleNewImage(self, imageDataListJson, from_scan):
+    def _on_scan_records_discovered(self, records_json: str, from_directory_pass: bool):
         if self._closing:
             return
-        orders = (self.fnameOrderSet, self.mtimeOrderSet, self.randomOrderSet)
-        records = [ImageData(**item) for item in json.loads(imageDataListJson)]
-        if from_scan:
-            self._scan_seen_paths.update(record.path_nf for record in records)
+        orders = (self.filename_order, self.modified_time_order, self.random_order)
+        records = [ImageRecord(**item) for item in json.loads(records_json)]
+        if from_directory_pass:
+            self._scan_seen_paths.update(record.normalized_path for record in records)
         changes = [
             record for record in records
-            if self.mtimeOrderSet.get(record.path_nf) != record
+            if self.modified_time_order.get(record.normalized_path) != record
         ]
         if changes:
             for order in orders:
                 order.upsert_batch(changes)
 
-        if self.selected_file_path is not None:
+        if self.requested_image_path is not None:
             for record in records:
-                if record.path_nf == self.selected_file_path:
-                    self.selected_file_path = None
+                if record.normalized_path == self.requested_image_path:
+                    self.requested_image_path = None
                     if self.loadImageFromFile(record) is None:
-                        self._candidate_paths.add(record.path_nf)
+                        self._queued_or_attempted_paths.add(record.normalized_path)
                         self.statusBar().showMessage(f"Unable to open {record.name}", 3000)
                     break
 
-        if self.currentPath is None and self.selected_file_path is None:
+        if self.current_path is None and self.requested_image_path is None:
             self.queueImageCandidates(records)
 
-        self.label.setText(
-            f"count: {len(self.mtimeOrderSet)} ... ({self.imageLoader.batch_count_threshold})"
+        self.image_count_label.setText(
+            f"count: {len(self.modified_time_order)} ... ({self.folder_scan_worker.batch_count_threshold})"
         )
 
     def resetImageCandidates(self):
-        self._image_candidates = deque()
-        self._candidate_paths = set()
-        self._candidate_retry_pending = False
+        """Reset the queue and forget both pending and attempted paths."""
+        self._image_candidate_queue = deque()
+        self._queued_or_attempted_paths = set()
+        self._candidate_attempt_scheduled = False
 
     def queueImageCandidates(self, records):
-        candidates = self._image_candidates
+        candidate_queue = self._image_candidate_queue
         for record in records:
-            path = record.path_nf
-            if path not in self._candidate_paths:
-                self._candidate_paths.add(path)
-                candidates.append(path)
-        if self._candidate_retry_pending:
+            path = record.normalized_path
+            if path not in self._queued_or_attempted_paths:
+                self._queued_or_attempted_paths.add(path)
+                candidate_queue.append(path)
+        if self._candidate_attempt_scheduled:
             return
 
         def try_next():
-            if self._image_candidates is not candidates:
+            if self._image_candidate_queue is not candidate_queue:
                 return
-            self._candidate_retry_pending = False
-            if self.currentPath is not None:
-                self._candidate_paths.difference_update(candidates)
-                candidates.clear()
-            elif candidates:
-                path = candidates.popleft()
-                record = self.mtimeOrderSet.get(path)
+            self._candidate_attempt_scheduled = False
+            if self.current_path is not None:
+                self._queued_or_attempted_paths.difference_update(candidate_queue)
+                candidate_queue.clear()
+            elif candidate_queue:
+                path = candidate_queue.popleft()
+                record = self.modified_time_order.get(path)
                 if record is None:
-                    self._candidate_paths.discard(path)
+                    self._queued_or_attempted_paths.discard(path)
                 if record is not None and self.loadImageFromFile(record) is not None:
-                    self._candidate_paths.difference_update(candidates)
-                    candidates.clear()
-                elif candidates:
-                    self._candidate_retry_pending = True
+                    self._queued_or_attempted_paths.difference_update(candidate_queue)
+                    candidate_queue.clear()
+                elif candidate_queue:
+                    self._candidate_attempt_scheduled = True
                     QTimer.singleShot(0, self, try_next)
 
         try_next()
 
     def showFirstReadableImage(self, skip_path):
         self.queueImageCandidates(
-            record for record in self.mtimeOrderSet if record.path_nf != skip_path
+            record for record in self.modified_time_order if record.normalized_path != skip_path
         )
 
-    def finishLoadingImages(self, scan_succeeded, candidate_names):
+    def _on_folder_scan_completed(self, scan_succeeded, candidate_names):
         if self._closing:
             return
-        if self.imageLoader is not None:
+        if self.folder_scan_worker is not None:
             # The result signal can arrive just before QThread exits.
-            self.imageLoader.wait()
+            self.folder_scan_worker.wait()
         if scan_succeeded:
             self._last_dir_snapshot = candidate_names
         elif self._reload_was_required:
@@ -1746,33 +1758,33 @@ class ImageViewer(QMainWindow):
         failed_path = None
         if scan_succeeded:
             missing = {
-                record.path_nf for record in self.mtimeOrderSet
-                if record.path_nf not in self._scan_seen_paths
+                record.normalized_path for record in self.modified_time_order
+                if record.normalized_path not in self._scan_seen_paths
             }
             if missing:
-                for order in (self.mtimeOrderSet, self.fnameOrderSet, self.randomOrderSet):
+                for order in (self.modified_time_order, self.filename_order, self.random_order):
                     order.discard_paths(missing)
 
-            if self.currentPath in missing:
-                self.currentPath = None
-            elif self.currentPath and self.currentPath == self._scan_refresh_path:
-                record = self.mtimeOrderSet.get(self.currentPath)
+            if self.current_path in missing:
+                self.current_path = None
+            elif self.current_path and self.current_path == self._scan_refresh_path:
+                record = self.modified_time_order.get(self.current_path)
                 if record is not None and self.loadImageFromFile(record) is None:
-                    failed_path = self.currentPath
-                    self.currentPath = None
+                    failed_path = self.current_path
+                    self.current_path = None
 
-        if self.currentPath is None:
-            self.currentPixmap = None
+        if self.current_path is None:
+            self.current_pixmap = None
             self.refreshMetadataForCurrentImage()
-            self.imageDisplay.clearData()
+            self.image_display.clearData()
             self.setWindowTitle("Yee3")
             self.showFirstReadableImage(failed_path)
 
-        self.selected_file_path = None
+        self.requested_image_path = None
         self._scan_refresh_path = None
         self._scan_seen_paths.clear()
         elapsed_time = time.monotonic() - self._scan_start_time
-        count = len(self.mtimeOrderSet)
+        count = len(self.modified_time_order)
 
         message = "Complete" if scan_succeeded else "Unable to finish folder scan"
         if self._folder_changed_during_scan:
@@ -1781,18 +1793,18 @@ class ImageViewer(QMainWindow):
             self.statusBar().showMessage(f"{message}. Use Reload Current Folder.")
         else:
             self.statusBar().showMessage(message, 3000)
-        self.label.setText(f"count: {count}")
+        self.image_count_label.setText(f"count: {count}")
 
-        self.lazyLoadingInProgress = False
+        self.folder_scan_in_progress = False
         if self._watched_folder:
-            if self._watched_folder not in self.watcher.directories() and (
+            if self._watched_folder not in self.directory_watcher.directories() and (
                 count < 100 or count / elapsed_time > 1000
             ):
-                self.watcher.addPath(self._watched_folder)
+                self.directory_watcher.addPath(self._watched_folder)
             # Start polling after the folder scan is complete
             if (
                 not self._directory_poll_timer.isActive()
-                and self.pollToggle.isChecked()
+                and self.poll_button.isChecked()
                 and not self._folder_changed_during_scan
             ):
                 self._empty_poll_count = 0
@@ -1802,12 +1814,12 @@ class ImageViewer(QMainWindow):
     def on_directory_changed(self, path):
         if self._closing or path != self._watched_folder:
             return
-        if self.lazyLoadingInProgress:
+        if self.folder_scan_in_progress:
             self._folder_changed_during_scan = True
             return
         if self._folder_changed_during_scan:
             return
-        if not self._directory_poll_timer.isActive() and self.pollToggle.isChecked():
+        if not self._directory_poll_timer.isActive() and self.poll_button.isChecked():
             self._empty_poll_count = 0
             self._directory_poll_timer.start(2000)  # poll every 2 seconds
         self.updateWatchStatusLabel()
@@ -1817,7 +1829,7 @@ class ImageViewer(QMainWindow):
         """Poll directory entries to detect renames on network shares."""
         # self.statusBar().showMessage("checking", 1000)
         folder = self._watched_folder
-        if not folder or self.lazyLoadingInProgress or self._folder_changed_during_scan:
+        if not folder or self.folder_scan_in_progress or self._folder_changed_during_scan:
             return
         try:
             names = os.listdir(folder)
@@ -1852,16 +1864,16 @@ class ImageViewer(QMainWindow):
                 self.updateWatchStatusLabel()
                 self.statusBar().showMessage("Polling stopped", 1000)
 
-    def loadImageFromFile(self, imageData: ImageData):
+    def loadImageFromFile(self, image_record: ImageRecord):
         """
-        Load and display the image represented by the given ImageData.
+        Load and display the image represented by the given ImageRecord.
 
-        :param imageData: Metadata for the image to display.
+        :param image_record: Metadata for the image to display.
         """
-        filePath = imageData.path_nf
-        currentPath = unicodedata.normalize("NFD", filePath)
+        filePath = image_record.normalized_path
+        current_path = unicodedata.normalize("NFD", filePath)
         ext = Path(filePath).suffix[1:]
-        should_read_metadata = self.metadataDock.isVisible()
+        should_read_metadata = self.metadata_dock.isVisible()
         image_bytes = None
         metadata_read_error = None
 
@@ -1906,61 +1918,61 @@ class ImageViewer(QMainWindow):
             return None
         else:
             self.setWindowTitle(f"Yee3 - {os.path.basename(filePath)}")
-            self.currentPath = currentPath
-            self.currentPixmap = image
-            self.imageDisplay.setData(
-                self.currentPixmap,
+            self.current_path = current_path
+            self.current_pixmap = image
+            self.image_display.setData(
+                self.current_pixmap,
                 QMovie(filePath) if ext in image_format_animated else None,
             )
             self.adjustImageScale()
-            if self.metadataDock.isVisible():
+            if self.metadata_dock.isVisible():
                 if metadata_read_error is not None:
-                    self.metadataPanel.setError(currentPath, ext or "unknown", metadata_read_error)
+                    self.metadata_panel.setError(current_path, ext or "unknown", metadata_read_error)
                 elif image_bytes is None:
-                    self.metadataPanel.setPlaceholder("Image metadata is unavailable for this image.")
+                    self.metadata_panel.setPlaceholder("Image metadata is unavailable for this image.")
                 else:
-                    metadata = parse_image_metadata_bytes(currentPath, image_bytes)
+                    metadata = parse_image_metadata_bytes(current_path, image_bytes)
                     if metadata.error:
-                        self.metadataPanel.setError(
+                        self.metadata_panel.setError(
                             metadata.path, metadata.format, metadata.error
                         )
                     else:
-                        self.metadataPanel.setResult(metadata)
+                        self.metadata_panel.setResult(metadata)
             count = self.counter.count()
-            self.count_label.setText(f"{count:>3} ips")
+            self.display_rate_label.setText(f"{count:>3} ips")
             return image
 
     def adjustImageScale(self):
         """
         Adjust the image scale so that it fits optimally in the available central area.
         """
-        if self.currentPixmap:
-            availableWidth = self.scrollArea.viewport().width()
-            availableHeight = self.scrollArea.viewport().height()
-            imageSize = self.currentPixmap.size()
+        if self.current_pixmap:
+            availableWidth = self.scroll_area.viewport().width()
+            availableHeight = self.scroll_area.viewport().height()
+            imageSize = self.current_pixmap.size()
             # Calculate the optimal scale for the screen
-            self.fittedScale = min(
+            self.fitted_scale = min(
                 availableWidth / imageSize.width(), availableHeight / imageSize.height()
             )
             # Adjust the current scale to the optimal size
-            self.scaleFactor = self.fittedScale
-            newSize = imageSize * self.scaleFactor
-            scaledPixmap = self.currentPixmap.scaled(
+            self.scale_factor = self.fitted_scale
+            newSize = imageSize * self.scale_factor
+            scaledPixmap = self.current_pixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.imageDisplay.setPixmap(scaledPixmap)
-            self.imageDisplay.setScaleFactor(self.scaleFactor)
-            self.imageDisplay.resize(scaledPixmap.size())
+            self.image_display.setPixmap(scaledPixmap)
+            self.image_display.setScaleFactor(self.scale_factor)
+            self.image_display.resize(scaledPixmap.size())
 
     def navigateImage(self, order, *, previous):
-        current_path = self.currentPath
+        current_path = self.current_path
         if current_path is None or order.get(current_path) is None:
             return False
 
         # The chronological orders are stored newest first. Up and left
         # advance through the stored order, toward older images.
         neighbor = order.next_path if previous else order.prev_path
-        loop = self.loopScroll.isChecked()
+        loop = self.loop_scroll_button.isChecked()
         while (path := neighbor(current_path, loop=loop)) not in (None, current_path):
             record = order.get(path)
             if self.loadImageFromFile(record) is not None:
@@ -1969,16 +1981,16 @@ class ImageViewer(QMainWindow):
         return False
 
     def verticalPreviousImage(self):
-        return self.navigateImage(self.verticalOrderSet, previous=True)
+        return self.navigateImage(self.vertical_order, previous=True)
 
     def verticalNextImage(self):
-        return self.navigateImage(self.verticalOrderSet, previous=False)
+        return self.navigateImage(self.vertical_order, previous=False)
 
     def horizontalPreviousImage(self):
-        return self.navigateImage(self.horizontalOrderSet, previous=True)
+        return self.navigateImage(self.horizontal_order, previous=True)
 
     def horizontalNextImage(self):
-        return self.navigateImage(self.horizontalOrderSet, previous=False)
+        return self.navigateImage(self.horizontal_order, previous=False)
 
     def keyPressEvent(self, event):
         """
@@ -2017,18 +2029,18 @@ class ImageViewer(QMainWindow):
         if vertical:
             amount = delta.y()
             accumulation = self.scrollAccumulationY
-            scrollbar = self.scrollArea.verticalScrollBar()
-            order = self.verticalOrderSet
+            scrollbar = self.scroll_area.verticalScrollBar()
+            order = self.vertical_order
         else:
             amount = delta.x()
             accumulation = self.scrollAccumulationX
-            scrollbar = self.scrollArea.horizontalScrollBar()
-            order = self.horizontalOrderSet
+            scrollbar = self.scroll_area.horizontalScrollBar()
+            order = self.horizontal_order
         if scrollbar.minimum() != scrollbar.maximum():
             event.ignore()
             return
 
-        mode = "free" if self.freeScroll.isChecked() else "limit"
+        mode = "free" if self.free_scroll_button.isChecked() else "limit"
         settings = scroll_factors_dict[mode]
         factors = settings["vertical" if vertical else "horizontal"]
         if amount * accumulation < 0:
@@ -2056,7 +2068,7 @@ class ImageViewer(QMainWindow):
     def decayScrollValues(self):
         """Reduce and update the gauge display"""
 
-        if self.freeScroll.isChecked():
+        if self.free_scroll_button.isChecked():
             scroll_factors = scroll_factors_dict["free"]
         else:
             scroll_factors = scroll_factors_dict["limit"]
@@ -2105,15 +2117,15 @@ class ImageViewer(QMainWindow):
 
         :param factor: Multiplicative factor to adjust the scale.
         """
-        if self.currentPixmap:
-            self.scaleFactor *= factor
-            newSize = self.currentPixmap.size() * self.scaleFactor
-            scaledPixmap = self.currentPixmap.scaled(
+        if self.current_pixmap:
+            self.scale_factor *= factor
+            newSize = self.current_pixmap.size() * self.scale_factor
+            scaledPixmap = self.current_pixmap.scaled(
                 newSize, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            self.imageDisplay.setPixmap(scaledPixmap)
-            self.imageDisplay.setScaleFactor(self.scaleFactor)
-            self.imageDisplay.resize(scaledPixmap.size())
+            self.image_display.setPixmap(scaledPixmap)
+            self.image_display.setScaleFactor(self.scale_factor)
+            self.image_display.resize(scaledPixmap.size())
 
     def contextMenuEvent(self, event):
         """
@@ -2127,9 +2139,9 @@ class ImageViewer(QMainWindow):
         action = menu.exec_(event.globalPos())
         if action in actions:
             if actions[action] == "reveal":
-                if self.currentPath is not None:
+                if self.current_path is not None:
                     try:
-                        subprocess.call(["open", "-R", self.currentPath])
+                        subprocess.call(["open", "-R", self.current_path])
                     except Exception as e:
                         print("Error revealing file in Finder:", e)
             elif actions[action] == "info":
@@ -2172,14 +2184,14 @@ class ImageViewer(QMainWindow):
         self._closing = True
         self._directory_poll_timer.stop()
         self.resetImageCandidates()
-        if self.imageLoader is not None:
-            self.imageLoader.requestInterruption()
+        if self.folder_scan_worker is not None:
+            self.folder_scan_worker.requestInterruption()
 
     def stopFolderScan(self):
         self.requestFolderScanStop()
-        if self.imageLoader is not None:
-            self.imageLoader.wait()
-        self.lazyLoadingInProgress = False
+        if self.folder_scan_worker is not None:
+            self.folder_scan_worker.wait()
+        self.folder_scan_in_progress = False
 
     def closeAfterFolderScan(self):
         if self._closing and self.isVisible():
@@ -2187,12 +2199,12 @@ class ImageViewer(QMainWindow):
 
     def closeEvent(self, event):
         self.requestFolderScanStop()
-        if self.imageLoader is not None and self.imageLoader.isRunning():
+        if self.folder_scan_worker is not None and self.folder_scan_worker.isRunning():
             event.ignore()
             self.statusBar().showMessage("Waiting for folder scan to stop…")
             return
 
-        self.lazyLoadingInProgress = False
+        self.folder_scan_in_progress = False
         self.saveSettings()
         super().closeEvent(event)
 
@@ -2212,18 +2224,18 @@ class ImageViewer(QMainWindow):
                 if "window_x" in config and "window_y" in config:
                     self.move(config["window_x"], config["window_y"])
                 if "copy_destinations" in config:
-                    self.copyDestinations = config["copy_destinations"]
+                    self.copy_destinations = config["copy_destinations"]
                 else:
-                    self.copyDestinations = {}
+                    self.copy_destinations = {}
                 if "move_destinations" in config:
-                    self.moveDestinations = config["move_destinations"]
+                    self.move_destinations = config["move_destinations"]
                 else:
-                    self.moveDestinations = {}
+                    self.move_destinations = {}
             except Exception as e:
                 print("Error loading settings:", e)
         else:
-            self.copyDestinations = {}
-            self.moveDestinations = {}
+            self.copy_destinations = {}
+            self.move_destinations = {}
 
     def saveSettings(self):
         """
@@ -2234,8 +2246,8 @@ class ImageViewer(QMainWindow):
             "window_height": self.height(),
             "window_x": self.x(),
             "window_y": self.y(),
-            "copy_destinations": self.copyDestinations,
-            "move_destinations": self.moveDestinations,
+            "copy_destinations": self.copy_destinations,
+            "move_destinations": self.move_destinations,
         }
         config_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "yee3_config.json"
@@ -2250,41 +2262,41 @@ class ImageViewer(QMainWindow):
         """
         Update the copy destination list in the dock widget to reflect current assignments.
         """
-        self.copyList.clear()
+        self.copy_list.clear()
         for i in range(1, 10):
-            dest = self.copyDestinations.get(str(i)) or self.copyDestinations.get(i)
+            dest = self.copy_destinations.get(str(i)) or self.copy_destinations.get(i)
             if dest:
                 text = f"Cmd+{i}: {dest}"
             else:
                 text = f"Cmd+{i}: (not set)"
-            self.copyList.addItem(text)
+            self.copy_list.addItem(text)
 
     def updateMoveList(self):
         """Update the move destination list in the dock widget."""
-        self.moveList.clear()
+        self.move_list.clear()
         for i in range(1, 10):
-            dest = self.moveDestinations.get(str(i)) or self.moveDestinations.get(i)
+            dest = self.move_destinations.get(str(i)) or self.move_destinations.get(i)
             if dest:
                 text = f"Shift+{i}: {dest}"
             else:
                 text = f"Shift+{i}: (not set)"
-            self.moveList.addItem(text)
+            self.move_list.addItem(text)
 
     def destinationFor(self, index, *, move):
-        destinations = self.moveDestinations if move else self.copyDestinations
+        destinations = self.move_destinations if move else self.copy_destinations
         return destinations.get(str(index)) or destinations.get(index)
 
     def selectDestination(self, index, *, move):
         shortcut = f"Shift+{index}" if move else f"Cmd+{index}"
         folder = QFileDialog.getExistingDirectory(self, f"Select destination for {shortcut}")
         if folder:
-            destinations = self.moveDestinations if move else self.copyDestinations
+            destinations = self.move_destinations if move else self.copy_destinations
             destinations[str(index)] = folder
             (self.updateMoveList if move else self.updateCopyList)()
         return folder
 
     def showDestinationMenu(self, pos, *, move):
-        widget = self.moveList if move else self.copyList
+        widget = self.move_list if move else self.copy_list
         item = widget.itemAt(pos)
         if item is None:
             return
@@ -2295,7 +2307,7 @@ class ImageViewer(QMainWindow):
         menu = QMenu()
         clear = menu.addAction("Clear Destination")
         if menu.exec(widget.viewport().mapToGlobal(pos)) == clear:
-            destinations = self.moveDestinations if move else self.copyDestinations
+            destinations = self.move_destinations if move else self.copy_destinations
             destinations.pop(str(index), None)
             destinations.pop(index, None)
             (self.updateMoveList if move else self.updateCopyList)()
@@ -2314,8 +2326,8 @@ class ImageViewer(QMainWindow):
         if not dest:
             return False
 
-        if self.currentPath:
-            fileName = os.path.basename(self.currentPath)
+        if self.current_path:
+            fileName = os.path.basename(self.current_path)
             targetPath = os.path.join(dest, fileName)
             if os.path.exists(targetPath):
                 # If an existing file is an image, generate a thumbnail
@@ -2335,7 +2347,7 @@ class ImageViewer(QMainWindow):
                 if result == ReplaceDialogResult.REPLACE:
                     # Replace Transfer
                     try:
-                        transfer_function(self.currentPath, targetPath)
+                        transfer_function(self.current_path, targetPath)
                         self.statusBar().showMessage(f"Replaced file at {dest}", 3000)
                         return True
                     except Exception as e:
@@ -2344,7 +2356,7 @@ class ImageViewer(QMainWindow):
                 elif result == ReplaceDialogResult.RENAME:
                     # Transfer with a new name
                     try:
-                        transfer_with_unique_name(self.currentPath, dest, move)
+                        transfer_with_unique_name(self.current_path, dest, move)
                         self.statusBar().showMessage(
                             f"{label_result} to {dest} with a new name", 3000
                         )
@@ -2359,7 +2371,7 @@ class ImageViewer(QMainWindow):
             else:
                 # If there is no file with the same name, perform a normal copy or move
                 try:
-                    transfer_function(self.currentPath, targetPath)
+                    transfer_function(self.current_path, targetPath)
                     self.statusBar().showMessage(f"{label_result} to {dest}", 3000)
                     return True
                 except Exception as e:
@@ -2379,7 +2391,7 @@ class ImageViewer(QMainWindow):
         """
         Move the current image file to the move destination folder for the given index.
         """
-        current_image = self.verticalOrderSet.get(self.currentPath)
+        current_image = self.vertical_order.get(self.current_path)
         if not self.transferToDestination(index, move=True):
             return False
 
@@ -2389,27 +2401,27 @@ class ImageViewer(QMainWindow):
             if not self.verticalNextImage():
                 self.verticalPreviousImage()
             self.remove(current_image)
-            if self.currentPath is None:
-                self.imageDisplay.clearData()
+            if self.current_path is None:
+                self.image_display.clearData()
                 self.setWindowTitle("Yee3")
         return True
 
     def onCopyListDoubleClicked(self, item):
-        index = self.copyList.row(item) + 1
+        index = self.copy_list.row(item) + 1
         if self.destinationFor(index, move=False):
             self.copyToDestination(index)
         else:
             self.selectDestination(index, move=False)
 
     def onMoveListDoubleClicked(self, item):
-        index = self.moveList.row(item) + 1
+        index = self.move_list.row(item) + 1
         if self.destinationFor(index, move=True):
             self.moveToDestination(index)
         else:
             self.selectDestination(index, move=True)
 
     def fitWindowToImage(self):
-        if not self.currentPixmap:
+        if not self.current_pixmap:
             return
 
         self.layout().activate()
@@ -2417,12 +2429,12 @@ class ImageViewer(QMainWindow):
         frame = self.frameGeometry()
         frame_extra = frame.size() - self.size()
         # Measure the layout without scrollbars from the current zoom level.
-        layout_extra = self.size() - self.scrollArea.maximumViewportSize()
+        layout_extra = self.size() - self.scroll_area.maximumViewportSize()
         available = screen.size() - frame_extra - layout_extra
         if available.isEmpty():
             return
 
-        image_size = self.currentPixmap.size().scaled(available, Qt.KeepAspectRatio)
+        image_size = self.current_pixmap.size().scaled(available, Qt.KeepAspectRatio)
         self.resize(image_size + layout_extra)
         frame_size = self.size() + frame_extra
         centered_x = frame.left() + (frame.width() - frame_size.width()) // 2
@@ -2434,12 +2446,12 @@ class ImageViewer(QMainWindow):
         self.adjustImageScale()
 
     def eventFilter(self, obj, event):
-        if obj is self.scrollArea.viewport() and event.type() == QEvent.Wheel:
+        if obj is self.scroll_area.viewport() and event.type() == QEvent.Wheel:
             self.wheelEvent(event)
             return event.isAccepted()
 
         if event.type() == QEvent.MouseButtonDblClick and (
-            obj is self.imageDisplay or obj is self.scrollArea.viewport()
+            obj is self.image_display or obj is self.scroll_area.viewport()
         ):
             self.fitWindowToImage()
             return True
@@ -2493,31 +2505,31 @@ class ImageViewer(QMainWindow):
 
     def handlePinch(self, pinch):
         factor = pinch.scaleFactor()
-        new_scale = self.scaleFactor * factor
+        new_scale = self.scale_factor * factor
 
         # Limit the maximum and minimum zoom scale
-        max_zoom = self.fittedScale * 5.0  # Maximum 5x
-        min_zoom = self.fittedScale * 0.2  # Minimum 20%
+        max_zoom = self.fitted_scale * 5.0  # Maximum 5x
+        min_zoom = self.fitted_scale * 0.2  # Minimum 20%
 
         if new_scale > max_zoom:
-            factor = max_zoom / self.scaleFactor
+            factor = max_zoom / self.scale_factor
         elif new_scale < min_zoom:
-            factor = min_zoom / self.scaleFactor
+            factor = min_zoom / self.scale_factor
 
         # Determine the pinch center point
         if pinch.centerPoint().isNull():
             # hotSpot() is already in global coordinates, so use it as is
             centerPoint = pinch.hotSpot().toPoint()
-            # Convert to the coordinate system of imageDisplay
-            localPos = self.imageDisplay.mapFromGlobal(centerPoint)
+            # Convert to the coordinate system of image_display
+            localPos = self.image_display.mapFromGlobal(centerPoint)
         else:
             centerPoint = pinch.centerPoint().toPoint()
             # If centerPoint is in global coordinates, directly convert to viewport coordinates
-            localPos = self.scrollArea.viewport().mapFromGlobal(centerPoint)
+            localPos = self.scroll_area.viewport().mapFromGlobal(centerPoint)
 
         # Adjust scroll position
-        hbar = self.scrollArea.horizontalScrollBar()
-        vbar = self.scrollArea.verticalScrollBar()
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
         oldHValue = hbar.value()
         oldVValue = vbar.value()
 
@@ -2539,7 +2551,7 @@ class ImageViewerApplication(QApplication):
                 if isinstance(window, ImageViewer) and window.isVisible()
             ]
             if any(
-                window.imageLoader is not None and window.imageLoader.isRunning()
+                window.folder_scan_worker is not None and window.folder_scan_worker.isRunning()
                 for window in viewers
             ):
                 # Qt stops closing windows at the first deferred close. Send

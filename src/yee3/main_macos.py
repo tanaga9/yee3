@@ -15,7 +15,7 @@ class MacOSFileHandler(NSObject):
         try:
             # QMessageBox.information(None, "", "event: " + str(self.windows))
             imagePath = imagePaths[0]
-            if len(self.windows) == 1 and self.windows[0].currentPath is None:
+            if len(self.windows) == 1 and self.windows[0].current_path is None:
                 window = self.windows[0]
                 window.loadImagesFromFolder(imagePath)
             else:
@@ -42,7 +42,7 @@ def main():
     #     "new: "
     #     + str(delegate.windows)
     #     + " "
-    #     + str(window.currentPath)
+    #     + str(window.current_path)
     #     + " "
     #     + str(sys.argv),
     # )

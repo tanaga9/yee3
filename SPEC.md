@@ -12,16 +12,16 @@ A change notification received after completion may start a new scan when no man
 
 ## Order Model
 
-A folder is one collection of image records (`ImageData`) with three maintained orders.
+A folder is one collection of image records (`ImageRecord`) with three maintained orders.
 
 Base order sets:
-- `mtimeOrderSet`: newest-first order by file modified time
-- `fnameOrderSet`: descending lexical order by file name
-- `randomOrderSet`: stable pseudo-random order
+- `modified_time_order`: newest-first order by file modified time
+- `filename_order`: descending lexical order by file name
+- `random_order`: stable pseudo-random order
 
 Active navigation bindings:
-- `verticalOrderSet`: the order currently assigned to vertical navigation
-- `horizontalOrderSet`: the order currently assigned to horizontal navigation
+- `vertical_order`: the order currently assigned to vertical navigation
+- `horizontal_order`: the order currently assigned to horizontal navigation
 
 Each axis uses its selected order independently. Equal sort keys are resolved by path.
 Up and left move toward the end of the selected order. Down and right move toward its start.
@@ -29,24 +29,24 @@ Arrow keys and scrolling use the same directions for image navigation. When the 
 
 ```mermaid
 flowchart LR
-    A["Discovered ImageData batch"] -->|"apply batch"| B["mtimeOrderSet"]
-    A -->|"apply batch"| C["fnameOrderSet"]
-    A -->|"apply batch"| D["randomOrderSet"]
+    A["Discovered ImageRecord batch"] -->|"apply batch"| B["modified_time_order"]
+    A -->|"apply batch"| C["filename_order"]
+    A -->|"apply batch"| D["random_order"]
 
-    B -.->|"select as current"| E["verticalOrderSet"]
+    B -.->|"select as current"| E["vertical_order"]
     C -.->|"select as current"| E
     D -.->|"select as current"| E
 
-    B -.->|"select as current"| F["horizontalOrderSet"]
+    B -.->|"select as current"| F["horizontal_order"]
     C -.->|"select as current"| F
     D -.->|"select as current"| F
 
-    E -->|"next/prev path from currentPath"| G["Vertical navigation"]
-    F -->|"next/prev path from currentPath"| H["Horizontal navigation"]
+    E -->|"next/prev path from current_path"| G["Vertical navigation"]
+    F -->|"next/prev path from current_path"| H["Horizontal navigation"]
 
-    B --->|"index_map[path_nf]"| I["current image lookup"]
-    C --->|"index_map[path_nf]"| I
-    D --->|"index_map[path_nf]"| I
+    B --->|"records_by_path[normalized_path]"| I["current image lookup"]
+    C --->|"records_by_path[normalized_path]"| I
+    D --->|"records_by_path[normalized_path]"| I
 
     I -->|"resolve current image"| G
     I -->|"resolve current image"| H
@@ -54,16 +54,16 @@ flowchart LR
 
 ## Current Image State
 
-- `currentPath`: the identity of the currently displayed image
-- `currentPixmap`: the decoded base image used for rendering and scale calculations
+- `current_path`: the identity of the currently displayed image
+- `current_pixmap`: the decoded base image used for rendering and scale calculations
 
-`loadImageFromFile(imageData)` updates both values after decoding succeeds.
+`loadImageFromFile(image_record)` updates both values after decoding succeeds.
 
 ```mermaid
 flowchart LR
-    A["loadImageFromFile(imageData)"] -->|"imageData.path_nf"| B["currentPath"]
-    A ---->|"decoded image"| C["currentPixmap"]
-    C --->|"render + fit"| D["imageDisplay"]
+    A["loadImageFromFile(image_record)"] -->|"image_record.normalized_path"| B["current_path"]
+    A ---->|"decoded image"| C["current_pixmap"]
+    C --->|"render + fit"| D["image_display"]
 
     B -->|"resolve current position"| E["Vertical navigation"]
     B -->|"resolve current position"| F["Horizontal navigation"]
