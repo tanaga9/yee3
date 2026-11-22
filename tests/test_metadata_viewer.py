@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PIL import Image, PngImagePlugin
 from PySide6.QtWidgets import QApplication
 
-from yee3.app import ImageData, ImageViewer, MetadataPanel, OSType
+from yee3.app import ImageRecord, ImageViewer, MetadataPanel, OSType
 from yee3.image_metadata import ImageMetadataResult, parse_image_metadata_bytes
 
 
@@ -69,13 +69,13 @@ class MetadataViewerTests(unittest.TestCase):
                 with self.subTest(format=fmt):
                     path = Path(folder) / name
                     Image.new("RGB", (8, 12), "red").save(path, format=fmt)
-                    record = ImageData(name, str(path), 0, name)
+                    record = ImageRecord(name, str(path), 0, name)
                     with patch("yee3.app.open", create=True, side_effect=AssertionError("unexpected full file read")) as read:
                         self.assertIsNotNone(viewer.loadImageFromFile(record))
                         read.assert_not_called()
-                    self.assertEqual(viewer.currentPixmap.width(), 8)
-                    self.assertEqual(viewer.currentPath, str(path))
-                    self.assertIn("unavailable", viewer.metadataPanel.metaLabel.text())
+                    self.assertEqual(viewer.current_pixmap.width(), 8)
+                    self.assertEqual(viewer.current_path, str(path))
+                    self.assertIn("unavailable", viewer.metadata_panel.metaLabel.text())
 
     def test_supported_formats_still_load_metadata_with_uppercase_extensions(self):
         viewer = self.make_viewer()
@@ -92,11 +92,11 @@ class MetadataViewerTests(unittest.TestCase):
                         exif[0x010E] = "猫の写真\nSteps: 20".encode("utf-8") + b"\x00"
                         options = {"exif": exif}
                     Image.new("RGB", (8, 12), "red").save(path, format=fmt, **options)
-                    record = ImageData(path.name, str(path), 0, path.name)
+                    record = ImageRecord(path.name, str(path), 0, path.name)
                     with patch("yee3.app.open", create=True, wraps=open) as read:
                         self.assertIsNotNone(viewer.loadImageFromFile(record))
                         read.assert_called_once_with(str(path), "rb")
-                    self.assertIn("猫の写真", viewer.metadataPanel.parametersSection.textEdit.toPlainText())
+                    self.assertIn("猫の写真", viewer.metadata_panel.parametersSection.textEdit.toPlainText())
 
 
 if __name__ == "__main__":

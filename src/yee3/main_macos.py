@@ -1,11 +1,11 @@
 import os
 import sys
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 from Foundation import NSObject
 from Cocoa import NSApp
 
-from yee3.app import initialize_image_viewer, OSType
+from yee3.app import ImageViewerApplication, OSType, initialize_image_viewer
 
 
 class MacOSFileHandler(NSObject):
@@ -15,7 +15,7 @@ class MacOSFileHandler(NSObject):
         try:
             # QMessageBox.information(None, "", "event: " + str(self.windows))
             imagePath = imagePaths[0]
-            if len(self.windows) == 1 and self.windows[0].currentPath is None:
+            if len(self.windows) == 1 and self.windows[0].current_path is None:
                 window = self.windows[0]
                 window.loadImagesFromFolder(imagePath)
             else:
@@ -26,7 +26,7 @@ class MacOSFileHandler(NSObject):
 
 
 def main():
-    app = QApplication(sys.argv)
+    app = ImageViewerApplication(sys.argv)
     delegate = MacOSFileHandler.alloc().init()
 
     imagePath = sys.argv[1] if len(sys.argv) > 1 else None
@@ -42,7 +42,7 @@ def main():
     #     "new: "
     #     + str(delegate.windows)
     #     + " "
-    #     + str(window.currentPath)
+    #     + str(window.current_path)
     #     + " "
     #     + str(sys.argv),
     # )
